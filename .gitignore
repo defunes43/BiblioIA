@@ -1,0 +1,23 @@
+# Environnement virtuel
+.venv/
+venv/
+env/
+
+# Variables d'environnement (contient des clés secrètes)
+.env
+
+# Données personnelles (export Goodreads)
+data/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,8 @@
+pandas>=2.2
+langchain>=0.3
+langchain-openai>=0.2
+langchain-experimental>=0.3
+python-dotenv>=1.0
+requests>=2.32
+tabulate>=0.9
+pytest>=8.0
