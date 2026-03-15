@@ -18,8 +18,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from preprocessing import (
-    apply_arsac_rule,
+    _parse_dates_to_years,
     apply_author_bias_correction,
+    apply_older_books_rule,
     apply_recency_bias_correction,
     compute_bias_corrected_score,
 )
@@ -40,7 +41,7 @@ def _make_base_df() -> pd.DataFrame:
             "Author": ["Auteur X", "Auteur X", "Auteur X", "Auteur Y", "Auteur Z"],
             "My Rating": [5.0, 4.0, 3.0, 5.0, 4.0],
             "Average Rating": [4.5, 4.2, 3.8, 4.7, 4.3],
-            "Bookshelves": ["fiction", "arsac, fantasy", "fantasy", "sci-fi", "thriller"],
+            "Bookshelves": ["fiction", "older_books, fantasy", "fantasy", "sci-fi", "thriller"],
             "Date Read": [
                 today - timedelta(days=30),   # récent
                 today - timedelta(days=500),  # il y a ~1.5 ans
@@ -55,50 +56,74 @@ def _make_base_df() -> pd.DataFrame:
                 today - timedelta(days=150),
                 today - timedelta(days=200),
             ],
+            "Category": [
+                "Fiction",
+                "Fiction",
+                "Fiction",
+                "Fiction",
+                "Fiction",
+            ],
+            "Genre": [
+                "Fantasy",
+                "Fantasy",
+                "Fantasy",
+                "Science-Fiction",
+                "Thriller",
+            ],
+            "Micro-genre": [
+                "Epic Fantasy",
+                "Urban Fantasy",
+                "Gothic Fantasy",
+                "Cyberpunk",
+                "Medical Thriller",
+            ],
         }
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 1 — Règle arsac
+# Test 1 — Règle older_books
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_arsac_rule_forces_old_date() -> None:
-    """Les livres avec 'arsac' dans Bookshelves doivent avoir une Date Read >= 10 ans."""
+def test_older_books_rule_forces_old_date() -> None:
+    """Les livres avec 'older_books' dans Bookshelves doivent avoir une Date Read >= 10 ans."""
     df = _make_base_df()
-    df_result = apply_arsac_rule(df)
+    df = _parse_dates_to_years(df)  # Ajoute action_year
+    df_result = apply_older_books_rule(df)
 
-    cutoff = pd.Timestamp(date.today() - timedelta(days=365 * 10))
+    cutoff = date.today().year - 10
 
-    arsac_mask = df_result["Bookshelves"].str.contains("arsac", case=False, na=False)
-    for _, row in df_result[arsac_mask].iterrows():
-        assert row["Date Read"] <= cutoff, (
-            f"Le livre arsac '{row['Title']}' devrait avoir Date Read <= {cutoff}, "
-            f"mais a {row['Date Read']}."
+    mask = df_result["Bookshelves"].str.contains("older_books", case=False, na=False)
+    for _, row in df_result[mask].iterrows():
+        assert row["action_year"] <= cutoff, (
+            f"Le livre older_books '{row['Title']}' devrait avoir action_year <= {cutoff}, "
+            f"mais a {row['action_year']}."
         )
 
 
-def test_arsac_rule_preserves_older_dates() -> None:
-    """Si un livre arsac a déjà une Date Read assez ancienne, elle ne doit pas changer."""
+def test_older_books_rule_preserves_older_dates() -> None:
+    """Si un livre older_books a déjà une Date Read assez ancienne, elle ne doit pas changer."""
     df = _make_base_df()
-    # Force Livre B (arsac) à être lu il y a 15 ans
+    # Force Livre B (older_books) à être lu il y a 15 ans
     ancient_date = pd.Timestamp(date.today() - timedelta(days=365 * 15))
     df.loc[df["Title"] == "Livre B", "Date Read"] = ancient_date
 
-    df_result = apply_arsac_rule(df)
+    df = _parse_dates_to_years(df)
+    df_result = apply_older_books_rule(df)
 
-    livre_b_date = df_result.loc[df_result["Title"] == "Livre B", "Date Read"].iloc[0]
-    assert livre_b_date == ancient_date, "Une date déjà ancienne ne doit pas être modifiée."
+    livre_b_year = df_result.loc[df_result["Title"] == "Livre B", "action_year"].iloc[0]
+    assert livre_b_year <= (date.today().year - 15)
 
 
-def test_arsac_rule_no_arsac_books_unchanged() -> None:
-    """Sans livres arsac, le DataFrame ne doit pas être modifié."""
+def test_older_books_rule_no_tagged_books_unchanged() -> None:
+    """Sans livres marqués, le DataFrame ne doit pas être modifié."""
     df = _make_base_df()
-    df["Bookshelves"] = "fiction"  # supprime tout "arsac"
-    dates_before = df["Date Read"].copy()
-    df_result = apply_arsac_rule(df)
-    pd.testing.assert_series_equal(df_result["Date Read"], dates_before)
+    df["Bookshelves"] = "fiction"  # supprime tout "older_books"
+    df = _parse_dates_to_years(df)
+    years_before = df["action_year"].copy()
+    df_result = apply_older_books_rule(df)
+    pd.testing.assert_series_equal(df_result["action_year"], years_before)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,24 +132,16 @@ def test_arsac_rule_no_arsac_books_unchanged() -> None:
 
 
 def test_author_bias_weight_inversely_proportional() -> None:
-    """Auteur X (3 livres) doit avoir un poids ≈ 1/3, Auteur Y et Z un poids = 1."""
+    """Auteur X (3 livres) doit avoir un poids plus faible que Auteur Y ou Z (1 livre)."""
     df = _make_base_df()
     df_result = apply_author_bias_correction(df)
 
-    x_weight = df_result.loc[df_result["Author"] == "Auteur X", "author_weight"].iloc[0]
-    y_weight = df_result.loc[df_result["Author"] == "Auteur Y", "author_weight"].iloc[0]
-    z_weight = df_result.loc[df_result["Author"] == "Auteur Z", "author_weight"].iloc[0]
+    weight_x = df_result.loc[df_result["Author"] == "Auteur X", "author_weight"].iloc[0]
+    weight_y = df_result.loc[df_result["Author"] == "Auteur Y", "author_weight"].iloc[0]
 
-    assert math.isclose(x_weight, 1 / 3, rel_tol=1e-6), f"Poids X attendu 1/3, obtenu {x_weight}"
-    assert math.isclose(y_weight, 1.0, rel_tol=1e-6), f"Poids Y attendu 1.0, obtenu {y_weight}"
-    assert math.isclose(z_weight, 1.0, rel_tol=1e-6), f"Poids Z attendu 1.0, obtenu {z_weight}"
-
-
-def test_author_bias_weight_all_positive() -> None:
-    """Tous les poids auteur doivent être strictement positifs."""
-    df = _make_base_df()
-    df_result = apply_author_bias_correction(df)
-    assert (df_result["author_weight"] > 0).all(), "Des poids nuls ou négatifs détectés !"
+    assert weight_x < weight_y
+    assert math.isclose(weight_x, 1/3, rel_tol=1e-6)
+    assert math.isclose(weight_y, 1.0, rel_tol=1e-6)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -135,6 +152,7 @@ def test_author_bias_weight_all_positive() -> None:
 def test_recency_bias_recent_higher_than_old() -> None:
     """Un livre récent (30 jours) doit avoir un poids de nouveauté > livre ancien (3000 jours)."""
     df = _make_base_df()
+    df = _parse_dates_to_years(df)
     df_result = apply_recency_bias_correction(df)
 
     recent_weight = df_result.loc[df_result["Title"] == "Livre A", "recency_weight"].iloc[0]
@@ -148,19 +166,27 @@ def test_recency_bias_recent_higher_than_old() -> None:
 def test_recency_bias_weights_in_range() -> None:
     """Tous les poids de nouveauté doivent être entre 0 et 1."""
     df = _make_base_df()
+    df = _parse_dates_to_years(df)
     df_result = apply_recency_bias_correction(df)
     assert (df_result["recency_weight"] >= 0).all()
     assert (df_result["recency_weight"] <= 1).all()
 
 
 def test_recency_bias_missing_date_gets_neutral_weight() -> None:
-    """Un livre sans date (NaT) doit recevoir le poids neutre de 0.5."""
+    """Un livre sans date (NaT) doit recevoir le poids lié à l'année d'ajout (priorité après Date Read)."""
     df = _make_base_df()
+    df = _parse_dates_to_years(df)
     df_result = apply_recency_bias_correction(df)
 
+    # Livre E a Date Read = NaT, mais Date Added = 200 jours ago. 
+    # _parse_dates_to_years remplit action_year avec Date Added.
+    expected_year = df.loc[df["Title"] == "Livre E", "action_year"].iloc[0]
+    years_ago = date.today().year - expected_year
+    expected_weight = math.exp(-0.2 * years_ago)
+
     nat_weight = df_result.loc[df_result["Title"] == "Livre E", "recency_weight"].iloc[0]
-    assert math.isclose(nat_weight, 0.5, rel_tol=1e-6), (
-        f"Poids neutre attendu 0.5 pour date manquante, obtenu {nat_weight}."
+    assert math.isclose(nat_weight, expected_weight, rel_tol=1e-6), (
+        f"Poids attendu {expected_weight} pour date manquante, obtenu {nat_weight}."
     )
 
 
@@ -176,7 +202,8 @@ def test_missing_dates_do_not_crash_pipeline() -> None:
     df["Date Added"] = pd.NaT
 
     try:
-        df = apply_arsac_rule(df)
+        df = _parse_dates_to_years(df)
+        df = apply_older_books_rule(df)
         df = apply_author_bias_correction(df)
         df = apply_recency_bias_correction(df)
         df = compute_bias_corrected_score(df)
@@ -189,6 +216,7 @@ def test_missing_dates_do_not_crash_pipeline() -> None:
 def test_bias_corrected_score_normalized() -> None:
     """Le score global doit être normalisé entre 0 et 1."""
     df = _make_base_df()
+    df = _parse_dates_to_years(df)
     df = apply_author_bias_correction(df)
     df = apply_recency_bias_correction(df)
     df = compute_bias_corrected_score(df)

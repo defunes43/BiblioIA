@@ -1,10 +1,10 @@
 """
-api_client.py — Client Google Books avec validation disponibilité ebook français.
+api_client.py — Client Google Books unifié pour BiblioIA.
 
 Responsabilités :
-- Interroger l'API Google Books avec filtres langue et format.
-- Valider qu'un titre est disponible en ebook ET en français.
-- Gérer les erreurs réseau (timeout, rate-limit) avec retry exponentiel.
+- Interroger l'API pour récupérer les IDs de volumes.
+- Extraire la fiche complète (Volume API) pour obtenir l'arborescence des genres.
+- Valider la disponibilité d'un livre en Ebook FR pour l'Agent.
 """
 
 from __future__ import annotations
@@ -24,21 +24,9 @@ logger = logging.getLogger(__name__)
 # Types de données
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 @dataclass
 class BookAvailability:
-    """Résultat de la vérification de disponibilité d'un livre.
-
-    Attributes:
-        available: True si le livre est disponible en ebook en français.
-        title: Titre retourné par Google Books.
-        authors: Liste des auteurs retournés par Google Books.
-        language: Code langue du volume trouvé (ex: "fr").
-        is_ebook: Indique si un format ebook est disponible.
-        preview_link: URL vers Google Books.
-        error: Message d'erreur si la recherche a échoué.
-    """
-
+    """Résultat de la vérification de disponibilité d'un livre."""
     available: bool = False
     title: str = ""
     authors: list[str] = field(default_factory=list)
@@ -51,179 +39,147 @@ class BookAvailability:
         if self.error:
             return f"[ERREUR] {self.error}"
         if not self.available:
-            return (
-                f"❌ Non disponible en ebook français : '{self.title}'"
-                f" (langue={self.language!r}, ebook={self.is_ebook})"
-            )
-        return (
-            f"✅ Disponible en ebook français : '{self.title}'"
-            f" — {', '.join(self.authors)}\n   🔗 {self.preview_link}"
-        )
+            return f"❌ Non disponible en ebook français : '{self.title}'"
+        return f"✅ Disponible en ebook français : '{self.title}'\n   🔗 {self.preview_link}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers internes
+# Fonctions de Recherche (Search API)
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _build_params(title: str, author: str) -> dict[str, str]:
-    """Construit les paramètres de requête Google Books."""
-    query = f'intitle:"{title}"'
-    if author:
-        query += f' inauthor:"{author}"'
-
-    params: dict[str, str] = {
-        "q": query,
-        "langRestrict": "fr",
-        "printType": "books",
-        "maxResults": "10",
-    }
-    if GOOGLE_BOOKS_API_KEY:
-        params["key"] = GOOGLE_BOOKS_API_KEY
-    return params
-
-
-def _extract_volume_info(item: dict[str, Any]) -> dict[str, Any]:
-    """Extrait les informations pertinentes d'un item Google Books."""
-    volume_info: dict[str, Any] = item.get("volumeInfo", {})
-    sale_info: dict[str, Any] = item.get("saleInfo", {})
-    access_info: dict[str, Any] = item.get("accessInfo", {})
-
-    is_ebook: bool = sale_info.get("isEbook", False) or access_info.get(
-        "epub", {}
-    ).get("isAvailable", False)
-
-    return {
-        "title": volume_info.get("title", ""),
-        "authors": volume_info.get("authors", []),
-        "language": volume_info.get("language", ""),
-        "is_ebook": is_ebook,
-        "preview_link": volume_info.get("previewLink", ""),
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Fonctions publiques
-# ─────────────────────────────────────────────────────────────────────────────
-
 
 def search_books_google(
     title: str,
     author: str = "",
+    isbn: str = "",
     max_retries: int = 3,
-    timeout: int = 10,
+    strict_search: bool = True
 ) -> list[dict[str, Any]]:
-    """Interroge l'API Google Books et retourne les items bruts.
+    """Cherche des livres et retourne la liste des items."""
+    
+    if isbn:
+        query = f'isbn:{isbn}'
+    elif strict_search:
+        query = f'intitle:"{title}"'
+        if author:
+            query += f' inauthor:"{author}"'
+    else:
+        query = f'{title} {author}'.strip()
 
-    Args:
-        title: Titre du livre recherché.
-        author: Auteur du livre (optionnel, améliore la précision).
-        max_retries: Nombre maximum de tentatives en cas d'erreur.
-        timeout: Délai d'attente HTTP en secondes.
+    params: dict[str, str] = {"q": query, "maxResults": "5"}
+    if GOOGLE_BOOKS_API_KEY:
+        params["key"] = GOOGLE_BOOKS_API_KEY
 
-    Returns:
-        Liste de volumes (dicts) retournés par l'API.
-
-    Raises:
-        requests.HTTPError: Si l'API retourne une erreur non récupérable.
-    """
-    params = _build_params(title, author)
+    # Log de l'URL pour debug (SANS la clé API)
+    safe_url = f"{GOOGLE_BOOKS_BASE_URL}?q={query}&maxResults=5"
+    logger.info("   [API Search] GET %s", safe_url)
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = requests.get(
-                GOOGLE_BOOKS_BASE_URL, params=params, timeout=timeout
-            )
-
-            # Gestion rate-limit (429) avec backoff exponentiel
-            if response.status_code == 429:
-                wait_time = 2**attempt
-                logger.warning(
-                    "Rate-limit Google Books (429). Attente %ds (tentative %d/%d).",
-                    wait_time,
-                    attempt,
-                    max_retries,
-                )
-                time.sleep(wait_time)
+            response = requests.get(GOOGLE_BOOKS_BASE_URL, params=params, timeout=10)
+            
+            if response.status_code == 429 or response.status_code >= 500:
+                time.sleep(2**attempt)
                 continue
-
+                
             response.raise_for_status()
-            data = response.json()
-            items: list[dict[str, Any]] = data.get("items", [])
-            logger.debug(
-                "Google Books : %d résultat(s) pour '%s' / '%s'.",
-                len(items),
-                title,
-                author,
-            )
+            items = response.json().get("items", [])
+            logger.info("   [API Search] Retour API : %d items trouvés.", len(items))
             return items
-
-        except requests.Timeout:
-            logger.warning(
-                "Timeout Google Books (tentative %d/%d) pour '%s'.",
-                attempt,
-                max_retries,
-                title,
-            )
+            
+        except requests.RequestException as exc:
             if attempt == max_retries:
-                logger.error("Toutes les tentatives ont échoué pour '%s'.", title)
+                logger.error("   [API Search] Erreur réseau : %s", exc)
                 return []
             time.sleep(2**attempt)
-
-        except requests.HTTPError as exc:
-            logger.error("Erreur HTTP Google Books pour '%s' : %s", title, exc)
-            return []
-
-        except requests.RequestException as exc:
-            logger.error("Erreur réseau inattendue pour '%s' : %s", title, exc)
-            return []
-
+            
     return []
 
 
+def get_volume_id(title: str, author: str, isbn13: str, isbn10: str) -> str:
+    """Stratégie en cascade pure, prend strictement le premier ID trouvé."""
+    logger.info("🔍 Recherche ID pour : '%s' (ISBN13: %s)", title, isbn13)
+    
+    # 1. Tentative ISBN-13
+    if isbn13:
+        logger.info(" -> Tentative ISBN-13")
+        items = search_books_google("", "", isbn=isbn13)
+        if items:
+            vol_id = items[0].get("id", "")
+            vol_title = items[0].get("volumeInfo", {}).get("title", "Titre inconnu")
+            logger.info(" ✅ ID trouvé via ISBN-13 : %s (Titre Google: '%s')", vol_id, vol_title)
+            return vol_id
+        else:
+            logger.info(" ❌ Aucun résultat pour ISBN-13.")
+            
+    # 2. Tentative ISBN-10
+    if isbn10:
+        logger.info(" -> Tentative ISBN-10")
+        items = search_books_google("", "", isbn=isbn10)
+        if items:
+            vol_id = items[0].get("id", "")
+            vol_title = items[0].get("volumeInfo", {}).get("title", "Titre inconnu")
+            logger.info(" ✅ ID trouvé via ISBN-10 : %s (Titre Google: '%s')", vol_id, vol_title)
+            return vol_id
+        else:
+            logger.info(" ❌ Aucun résultat pour ISBN-10.")
+            
+    # 3. Tentative Titre + Auteur
+    if title:
+        logger.info(" -> Tentative Titre + Auteur (Strict)")
+        items = search_books_google(title, author, strict_search=True)
+        if items:
+            vol_id = items[0].get("id", "")
+            vol_title = items[0].get("volumeInfo", {}).get("title", "Titre inconnu")
+            logger.info(" ✅ ID trouvé via Texte Strict : %s (Titre Google: '%s')", vol_id, vol_title)
+            return vol_id
+        else:
+            logger.info(" ❌ Aucun résultat pour Texte Strict.")
+            
+        logger.info(" -> Tentative Titre + Auteur (Large)")
+        items = search_books_google(title, author, strict_search=False)
+        if items:
+            vol_id = items[0].get("id", "")
+            vol_title = items[0].get("volumeInfo", {}).get("title", "Titre inconnu")
+            logger.info(" ✅ ID trouvé via Texte Large : %s (Titre Google: '%s')", vol_id, vol_title)
+            return vol_id
+        else:
+            logger.info(" ❌ Aucun résultat pour Texte Large.")
+            
+    logger.warning(" 💥 Échec total. Aucun ID trouvé par aucune méthode.")
+    return ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vérification Ebook (Agent API)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def is_available_french_ebook(title: str, author: str = "") -> BookAvailability:
-    """Vérifie si un livre est disponible en ebook ET en français via Google Books.
-
-    Les critères de validation sont tous les deux obligatoires :
-    - ``volumeInfo.language == "fr"``
-    - ``saleInfo.isEbook == True`` OU ``accessInfo.epub.isAvailable == True``
-
-    Args:
-        title: Titre du livre à vérifier.
-        author: Auteur du livre (recommandé pour éviter les ambiguïtés).
-
-    Returns:
-        :class:`BookAvailability` décrivant le résultat.
-    """
+    """Vérifie si un livre est disponible en ebook ET en français."""
     try:
-        items = search_books_google(title, author)
-    except Exception as exc:  # noqa: BLE001
-        return BookAvailability(error=f"Erreur lors de la recherche : {exc}")
+        items = search_books_google(title, author, strict_search=True)
+        if not items:
+            items = search_books_google(title, author, strict_search=False)
+    except Exception as exc: 
+        return BookAvailability(error=f"Erreur de recherche : {exc}")
 
     if not items:
-        return BookAvailability(
-            error=f"Aucun résultat Google Books pour '{title}' / '{author}'."
-        )
+        return BookAvailability(error=f"Aucun résultat pour '{title}'.")
 
     for item in items:
-        info = _extract_volume_info(item)
-        if info["language"] == "fr" and info["is_ebook"]:
+        info = item.get("volumeInfo", {})
+        sale_info = item.get("saleInfo", {})
+        access_info = item.get("accessInfo", {})
+        
+        is_ebook = sale_info.get("isEbook", False) or access_info.get("epub", {}).get("isAvailable", False)
+        
+        if info.get("language") == "fr" and is_ebook:
             return BookAvailability(
                 available=True,
-                title=info["title"],
-                authors=info["authors"],
-                language=info["language"],
+                title=info.get("title", ""),
+                authors=info.get("authors", []),
+                language="fr",
                 is_ebook=True,
-                preview_link=info["preview_link"],
+                preview_link=info.get("previewLink", ""),
             )
 
-    # Aucun résultat ne satisfait les deux critères : retourne le premier pour info
-    first = _extract_volume_info(items[0])
-    return BookAvailability(
-        available=False,
-        title=first["title"],
-        authors=first["authors"],
-        language=first["language"],
-        is_ebook=first["is_ebook"],
-        preview_link=first["preview_link"],
-    )
+    first = items[0].get("volumeInfo", {})
+    return BookAvailability(available=False, title=first.get("title", ""))

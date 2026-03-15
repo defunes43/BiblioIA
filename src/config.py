@@ -17,9 +17,12 @@ load_dotenv(_PROJECT_ROOT / ".env")
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
 
-OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
-LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+ENRICHMENT_LLM_MODEL: str = os.getenv("ENRICHMENT_LLM_MODEL", "gemini-2.0-flash")
+ENRICHMENT_LLM_TEMPERATURE: float = float(os.getenv("ENRICHMENT_LLM_TEMPERATURE", "0.0"))
+
+AGENT_LLM_MODEL: str = os.getenv("AGENT_LLM_MODEL", "gemini-1.5-pro")
+AGENT_LLM_TEMPERATURE: float = float(os.getenv("AGENT_LLM_TEMPERATURE", "0.7"))
 
 # ── Google Books API ──────────────────────────────────────────────────────────
 
@@ -39,16 +42,17 @@ if not CSV_PATH.is_absolute():
 # Plus λ est élevé, plus les livres anciens sont pénalisés.
 RECENCY_DECAY_LAMBDA: float = float(os.getenv("RECENCY_DECAY_LAMBDA", "0.2"))
 
-# Nombre d'années forcé pour les livres marqués "arsac"
-ARSAC_YEARS_AGO: int = int(os.getenv("ARSAC_YEARS_AGO", "10"))
+# Nombre d'années forcé pour les livres marqués avec le tag spécifique (ex: "older_books")
+OLDER_BOOKS_YEARS_AGO: int = int(os.getenv("OLDER_BOOKS_YEARS_AGO", "10"))
+OLDER_BOOKS_TAG: str = os.getenv("OLDER_BOOKS_TAG", "older_books")
 
 # ── Validation ────────────────────────────────────────────────────────────────
 
 def validate() -> None:
     """Raise EnvironmentError if critical variables are missing."""
     missing: list[str] = []
-    if not OPENAI_API_KEY:
-        missing.append("OPENAI_API_KEY")
+    if not GOOGLE_API_KEY:
+        missing.append("GOOGLE_API_KEY")
     if missing:
         raise EnvironmentError(
             f"Variables d'environnement manquantes : {', '.join(missing)}\n"
