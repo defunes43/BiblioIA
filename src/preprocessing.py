@@ -22,7 +22,6 @@ from enrichment import enrich_dataframe_with_genres
 
 logger = logging.getLogger(__name__)
 
-# Nettoyage des colonnes : on retire tout ce qui touchait aux anciennes classifications LLM
 _USEFUL_COLUMNS: Final[list[str]] = [
     "Book Id",
     "Title",
@@ -41,8 +40,6 @@ _USEFUL_COLUMNS: Final[list[str]] = [
     "Read Count",
     "Micro-genre",
 ]
-
-# Suppression de _ARSAC_KEYWORD au profit de config.OLDER_BOOKS_TAG
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Chargement et Nettoyage de base

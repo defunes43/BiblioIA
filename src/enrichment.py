@@ -107,7 +107,15 @@ FORMAT OBLIGATOIRE (JSON uniquement) :
                 temperature=ENRICHMENT_LLM_TEMPERATURE 
             )
             response = llm.invoke(prompt)
-            text = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            # response.content peut être une str ou une liste de blocs (ex: [{"type": "text", "text": "..."}])
+            raw_content = response.content if hasattr(response, 'content') else str(response)
+            if isinstance(raw_content, list):
+                text = " ".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in raw_content
+                ).strip()
+            else:
+                text = str(raw_content).strip()
             
             # Extraction du bloc JSON
             start_idx = text.find('{')
