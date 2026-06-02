@@ -4,6 +4,7 @@ config.py — Centralised configuration loader for BiblioIA.
 Reads all settings from environment variables (populated via .env).
 Import this module first in every other module to guarantee variables are loaded.
 """
+# NOTE : Les variables AGENT_LLM_* ont été supprimées (v2 — plus d'agent LangChain).
 
 import os
 from pathlib import Path
@@ -21,9 +22,6 @@ GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
 ENRICHMENT_LLM_MODEL: str = os.getenv("ENRICHMENT_LLM_MODEL", "gemini-2.0-flash")
 ENRICHMENT_LLM_TEMPERATURE: float = float(os.getenv("ENRICHMENT_LLM_TEMPERATURE", "0.0"))
 
-AGENT_LLM_MODEL: str = os.getenv("AGENT_LLM_MODEL", "gemini-1.5-pro")
-AGENT_LLM_TEMPERATURE: float = float(os.getenv("AGENT_LLM_TEMPERATURE", "0.7"))
-
 # ── Google Books API ──────────────────────────────────────────────────────────
 
 # Optional: leave empty to use the unauthenticated quota (1 000 req/day)
@@ -36,6 +34,16 @@ CSV_PATH: Path = Path(os.getenv("CSV_PATH", "data/goodreads_library_export.csv")
 if not CSV_PATH.is_absolute():
     CSV_PATH = _PROJECT_ROOT / CSV_PATH
 
+# Bases de données SQLite
+_db_catalogue = Path(os.getenv("CATALOGUE_DB_PATH", "data/catalogue.db"))
+CATALOGUE_DB_PATH: Path = _db_catalogue if _db_catalogue.is_absolute() else _PROJECT_ROOT / _db_catalogue
+
+_db_profile = Path(os.getenv("PROFILE_DB_PATH", "data/profile.db"))
+PROFILE_DB_PATH: Path = _db_profile if _db_profile.is_absolute() else _PROJECT_ROOT / _db_profile
+
+# Nombre max de livres par sujet Open Library (catalogue builder)
+MAX_BOOKS_PER_SUBJECT: int = int(os.getenv("MAX_BOOKS_PER_SUBJECT", "500"))
+
 # ── Paramètres de biais ───────────────────────────────────────────────────────
 
 # Coefficient de décroissance exponentielle pour le biais de nouveauté.
@@ -45,6 +53,27 @@ RECENCY_DECAY_LAMBDA: float = float(os.getenv("RECENCY_DECAY_LAMBDA", "0.2"))
 # Nombre d'années forcé pour les livres marqués avec le tag spécifique (ex: "older_books")
 OLDER_BOOKS_YEARS_AGO: int = int(os.getenv("OLDER_BOOKS_YEARS_AGO", "10"))
 OLDER_BOOKS_TAG: str = os.getenv("OLDER_BOOKS_TAG", "older_books")
+
+# ── Performance fonctionnelle / ranking ──────────────────────────────────────
+
+# Facteur de bonus appliqué aux tags les plus représentatifs.
+# 0.0 = pas de bonus, 1.0 = bonus maximal.
+TOP_TAG_BOOST_FACTOR: float = float(os.getenv("TOP_TAG_BOOST_FACTOR", "0.35"))
+
+# Nombre de tags les plus importants utilisés pour le bonus de pertinence.
+TOP_TAG_COUNT: int = int(os.getenv("TOP_TAG_COUNT", "8"))
+
+# ── Enrichissement ────────────────────────────────────────────────────────────
+
+# Réenrichir les lignes "Non classifié"/"Erreur LLM" à chaque exécution.
+FORCE_REFRESH_UNCLASSIFIED: bool = os.getenv("FORCE_REFRESH_UNCLASSIFIED", "true").lower() == "true"
+
+# Nombre de workers pour l'enrichissement concurrent.
+# Défaut : 2 workers (adapté au Raspberry Pi — IO-bound, pas CPU-bound)
+ENRICHMENT_MAX_WORKERS: int = int(os.getenv("ENRICHMENT_MAX_WORKERS", "2"))
+
+# Sauvegarde d'étape après N livres traités.
+ENRICHMENT_SAVE_EVERY: int = int(os.getenv("ENRICHMENT_SAVE_EVERY", "50"))
 
 # ── Validation ────────────────────────────────────────────────────────────────
 

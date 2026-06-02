@@ -12,6 +12,7 @@ import concurrent.futures
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -19,12 +20,23 @@ from google.api_core.exceptions import ResourceExhausted
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from api_client import search_books_google
-from config import CSV_PATH, GOOGLE_API_KEY, ENRICHMENT_LLM_MODEL, ENRICHMENT_LLM_TEMPERATURE
+from config import (
+    CSV_PATH,
+    GOOGLE_API_KEY,
+    ENRICHMENT_LLM_MODEL,
+    ENRICHMENT_LLM_TEMPERATURE,
+    ENRICHMENT_MAX_WORKERS,
+    ENRICHMENT_SAVE_EVERY,
+    FORCE_REFRESH_UNCLASSIFIED,
+)
 
 logger = logging.getLogger(__name__)
 
-FORCE_REFRESH_UNCLASSIFIED = True
-MAX_WORKERS = 30  # Ajusté pour saturer intelligemment l'API
+MAX_WORKERS = max(1, ENRICHMENT_MAX_WORKERS)
+SAVE_EVERY = max(1, ENRICHMENT_SAVE_EVERY)
+
+_DESCRIPTION_CACHE: dict[tuple[str, str, str, str], str] = {}
+_TAGS_CACHE: dict[tuple[str, str, str], list[str]] = {}
 
 def _clean_isbn(isbn_raw: Any) -> str:
     """Nettoie le formatage Excel étrange des ISBN."""
@@ -35,6 +47,10 @@ def _clean_isbn(isbn_raw: Any) -> str:
 
 def fetch_book_description(title: str, author: str, isbn13: str, isbn10: str) -> str:
     """Récupère le résumé via l'API Google Books (cascade ISBN -> Texte)."""
+    cache_key = (title.strip().lower(), author.strip().lower(), isbn13, isbn10)
+    if cache_key in _DESCRIPTION_CACHE:
+        return _DESCRIPTION_CACHE[cache_key]
+
     def _extract_desc(items: list[dict[str, Any]]) -> str:
         for item in items:
             desc = item.get("volumeInfo", {}).get("description", "").strip()
@@ -43,22 +59,34 @@ def fetch_book_description(title: str, author: str, isbn13: str, isbn10: str) ->
 
     if isbn13:
         desc = _extract_desc(search_books_google("", "", isbn=isbn13))
-        if desc: return desc
+        if desc:
+            _DESCRIPTION_CACHE[cache_key] = desc
+            return desc
         
     if isbn10:
         desc = _extract_desc(search_books_google("", "", isbn=isbn10))
-        if desc: return desc
+        if desc:
+            _DESCRIPTION_CACHE[cache_key] = desc
+            return desc
 
     if title:
         desc = _extract_desc(search_books_google(title, author, strict_search=True))
-        if desc: return desc
+        if desc:
+            _DESCRIPTION_CACHE[cache_key] = desc
+            return desc
         desc = _extract_desc(search_books_google(title, author, strict_search=False))
-        if desc: return desc
+        if desc:
+            _DESCRIPTION_CACHE[cache_key] = desc
+            return desc
 
+    _DESCRIPTION_CACHE[cache_key] = ""
     return ""
 
 def generate_tags_with_llm(title: str, author: str, description: str) -> list[str]:
     """Génération de tags par JSON structuré selon la Taxonomie V4."""
+    cache_key = (title.strip().lower(), author.strip().lower(), description[:300].strip().lower())
+    if cache_key in _TAGS_CACHE:
+        return _TAGS_CACHE[cache_key]
     
     if not description:
         context = f"Je n'ai pas de résumé. Fais appel à tes connaissances sur l'œuvre '{title}' de '{author}'."
@@ -107,7 +135,15 @@ FORMAT OBLIGATOIRE (JSON uniquement) :
                 temperature=ENRICHMENT_LLM_TEMPERATURE 
             )
             response = llm.invoke(prompt)
-            text = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            # response.content peut être une str ou une liste de blocs (ex: [{"type": "text", "text": "..."}])
+            raw_content = response.content if hasattr(response, 'content') else str(response)
+            if isinstance(raw_content, list):
+                text = " ".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in raw_content
+                ).strip()
+            else:
+                text = str(raw_content).strip()
             
             # Extraction du bloc JSON
             start_idx = text.find('{')
@@ -152,6 +188,7 @@ FORMAT OBLIGATOIRE (JSON uniquement) :
             # Filtre final sur la longueur (pas de phrases)
             final_tags = [t for t in processed_tags if len(t.split()) <= 3]
             
+            _TAGS_CACHE[cache_key] = final_tags
             return final_tags
             
         except json.JSONDecodeError:
@@ -161,6 +198,7 @@ FORMAT OBLIGATOIRE (JSON uniquement) :
             if "quota" in str(exc).lower():
                 time.sleep(10 * (attempt + 1))
             
+    _TAGS_CACHE[cache_key] = []
     return []
 
 def _process_single_book(idx: int, row: pd.Series) -> tuple[int, str]:
@@ -183,7 +221,7 @@ def _process_single_book(idx: int, row: pd.Series) -> tuple[int, str]:
     logger.info("✅ [Thread] Terminé : '%s' -> %s", title, tags_string)
     return idx, tags_string
 
-def enrich_dataframe_with_genres(df: pd.DataFrame) -> pd.DataFrame:
+def enrich_dataframe_with_genres(df: pd.DataFrame, source_csv_path: Path | str | None = None) -> pd.DataFrame:
     logger.info("🚀 Début de l'enrichissement JSON Strict (Max Workers: %d)...", MAX_WORKERS)
     
     df_result = df.copy()
@@ -224,24 +262,25 @@ def enrich_dataframe_with_genres(df: pd.DataFrame) -> pd.DataFrame:
                 df_result.at[idx, "Micro-genre"] = tags_string
                 fetched_count += 1
                 
-                # Sauvegarde d'étape tous les 20 livres
-                if fetched_count % 20 == 0:
-                    _save_to_csv(df_result)
+                # Sauvegarde d'étape paramétrable
+                if fetched_count % SAVE_EVERY == 0:
+                    _save_to_csv(df_result, source_csv_path=source_csv_path)
                     logger.info("💾 Sauvegarde d'étape réussie (%d/%d).", fetched_count, len(books_to_process))
                     
             except Exception as exc:
                 logger.error("Erreur critique sur un thread : %s", exc)
 
     if fetched_count > 0:
-        _save_to_csv(df_result)
+        _save_to_csv(df_result, source_csv_path=source_csv_path)
 
     logger.info("🏁 Enrichissement terminé (%d livres traités).", fetched_count)
     return df_result
 
-def _save_to_csv(df_updated: pd.DataFrame) -> None:
+def _save_to_csv(df_updated: pd.DataFrame, source_csv_path: Path | str | None = None) -> None:
     """Isole la logique de sauvegarde pour les étapes intermédiaires."""
+    target_path = Path(source_csv_path) if source_csv_path else CSV_PATH
     try:
-        full_df = pd.read_csv(CSV_PATH, dtype=str, encoding="utf-8")
+        full_df = pd.read_csv(target_path, dtype=str, encoding="utf-8")
         if "Micro-genre" not in full_df.columns:
             full_df["Micro-genre"] = ""
         
@@ -255,6 +294,6 @@ def _save_to_csv(df_updated: pd.DataFrame) -> None:
             return row_series
 
         full_df = full_df.apply(_update_row, axis=1)
-        full_df.to_csv(CSV_PATH, index=False, encoding="utf-8")
+        full_df.to_csv(target_path, index=False, encoding="utf-8")
     except Exception as exc:
         logger.error("Erreur de sauvegarde CSV : %s", exc)

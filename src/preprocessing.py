@@ -17,12 +17,18 @@ from typing import Final
 
 import pandas as pd
 
-from config import CSV_PATH, OLDER_BOOKS_TAG, OLDER_BOOKS_YEARS_AGO, RECENCY_DECAY_LAMBDA
+from config import (
+    CSV_PATH,
+    OLDER_BOOKS_TAG,
+    OLDER_BOOKS_YEARS_AGO,
+    RECENCY_DECAY_LAMBDA,
+    TOP_TAG_BOOST_FACTOR,
+    TOP_TAG_COUNT,
+)
 from enrichment import enrich_dataframe_with_genres
 
 logger = logging.getLogger(__name__)
 
-# Nettoyage des colonnes : on retire tout ce qui touchait aux anciennes classifications LLM
 _USEFUL_COLUMNS: Final[list[str]] = [
     "Book Id",
     "Title",
@@ -41,8 +47,6 @@ _USEFUL_COLUMNS: Final[list[str]] = [
     "Read Count",
     "Micro-genre",
 ]
-
-# Suppression de _ARSAC_KEYWORD au profit de config.OLDER_BOOKS_TAG
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Chargement et Nettoyage de base
@@ -162,6 +166,50 @@ def compute_bias_corrected_score(df: pd.DataFrame) -> pd.DataFrame:
     logger.info("Score pondéré calculé. Moyenne : %.3f", df["bias_corrected_score"].mean())
     return df
 
+
+def apply_micro_genre_relevance_boost(df: pd.DataFrame) -> pd.DataFrame:
+    """Applique un bonus de pertinence basé sur les micro-genres dominants."""
+    df = df.copy()
+    if "Micro-genre" not in df.columns or "bias_corrected_score" not in df.columns:
+        return df
+
+    exploded = (
+        df[["Book Id", "Micro-genre", "bias_corrected_score"]]
+        .assign(tag=lambda x: x["Micro-genre"].astype(str).str.split(","))
+        .explode("tag")
+    )
+    exploded["tag"] = exploded["tag"].astype(str).str.strip().str.capitalize()
+    exploded = exploded[~exploded["tag"].isin(["", "Nan", "Erreur llm", "Non classifié"])]
+
+    if exploded.empty:
+        df["functional_relevance_score"] = df["bias_corrected_score"]
+        return df
+
+    top_tags = (
+        exploded.groupby("tag")["bias_corrected_score"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(max(1, TOP_TAG_COUNT))
+        .index
+    )
+    top_tag_set = set(top_tags)
+
+    def _book_boost(tags_str: str) -> float:
+        tags = [t.strip().capitalize() for t in str(tags_str).split(",") if t.strip()]
+        if not tags:
+            return 0.0
+        matched = sum(1 for t in tags if t in top_tag_set)
+        return min(1.0, matched / max(1, len(tags)))
+
+    boost = df["Micro-genre"].apply(_book_boost) * TOP_TAG_BOOST_FACTOR
+    df["functional_relevance_score"] = (df["bias_corrected_score"] * (1.0 + boost)).clip(upper=1.0)
+
+    logger.info(
+        "Bonus micro-genre appliqué. Moyenne score fonctionnel : %.3f",
+        df["functional_relevance_score"].mean(),
+    )
+    return df
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Point d'entrée public
 # ─────────────────────────────────────────────────────────────────────────────
@@ -172,8 +220,9 @@ def load_and_prepare(csv_path: Path | str | None = None) -> pd.DataFrame:
     df = _filter_read_books(df)
     df = _clean_text_columns(df)
     
-    # Enrichissement avec OpenLibrary (ajoute/remplit 'Micro-genre')
-    df = enrich_dataframe_with_genres(df)
+    # Enrichissement avec persistance cohérente sur le même CSV source
+    input_path = Path(csv_path) if csv_path else CSV_PATH
+    df = enrich_dataframe_with_genres(df, source_csv_path=input_path)
     
     # Transformations temporelles et biais
     df = _parse_dates_to_years(df)
@@ -181,6 +230,7 @@ def load_and_prepare(csv_path: Path | str | None = None) -> pd.DataFrame:
     df = apply_author_bias_correction(df)
     df = apply_recency_bias_correction(df)
     df = compute_bias_corrected_score(df)
+    df = apply_micro_genre_relevance_boost(df)
     
     df = df.reset_index(drop=True)
     df = df.fillna("")
