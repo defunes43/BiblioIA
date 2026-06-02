@@ -25,6 +25,7 @@ from config import (
     TOP_TAG_BOOST_FACTOR,
     TOP_TAG_COUNT,
 )
+from enrichment import enrich_dataframe_with_genres
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,8 @@ _USEFUL_COLUMNS: Final[list[str]] = [
     "Date Added",
     "Bookshelves",
     "Exclusive Shelf",
-    "Read Count"
+    "Read Count",
+    "Micro-genre",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,6 +60,10 @@ def load_csv(csv_path: Path | str | None = None) -> pd.DataFrame:
 
     logger.info("Chargement du CSV : %s", path)
     df = pd.read_csv(path, dtype=str, encoding="utf-8")
+
+    # S'assurer que la colonne Micro-genre existe (même si vide) avant le filtrage
+    if "Micro-genre" not in df.columns:
+        df["Micro-genre"] = ""
 
     missing_cols = [c for c in _USEFUL_COLUMNS if c not in df.columns]
     if missing_cols:
@@ -88,7 +94,7 @@ def _filter_read_books(df: pd.DataFrame) -> pd.DataFrame:
 
 def _clean_text_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Strip les espaces superflus sur les colonnes texte principales."""
-    text_cols = ["Title", "Author", "Bookshelves"]
+    text_cols = ["Title", "Author", "Bookshelves", "Micro-genre"]
     for col in text_cols:
         df[col] = df[col].astype(str).str.strip()
     return df
@@ -164,12 +170,12 @@ def compute_bias_corrected_score(df: pd.DataFrame) -> pd.DataFrame:
 def apply_micro_genre_relevance_boost(df: pd.DataFrame) -> pd.DataFrame:
     """Applique un bonus de pertinence basé sur les micro-genres dominants."""
     df = df.copy()
-    if "Bookshelves" not in df.columns or "bias_corrected_score" not in df.columns:
+    if "Micro-genre" not in df.columns or "bias_corrected_score" not in df.columns:
         return df
 
     exploded = (
-        df[["Book Id", "Bookshelves", "bias_corrected_score"]]
-        .assign(tag=lambda x: x["Bookshelves"].astype(str).str.split(","))
+        df[["Book Id", "Micro-genre", "bias_corrected_score"]]
+        .assign(tag=lambda x: x["Micro-genre"].astype(str).str.split(","))
         .explode("tag")
     )
     exploded["tag"] = exploded["tag"].astype(str).str.strip().str.capitalize()
@@ -195,7 +201,7 @@ def apply_micro_genre_relevance_boost(df: pd.DataFrame) -> pd.DataFrame:
         matched = sum(1 for t in tags if t in top_tag_set)
         return min(1.0, matched / max(1, len(tags)))
 
-    boost = df["Bookshelves"].apply(_book_boost) * TOP_TAG_BOOST_FACTOR
+    boost = df["Micro-genre"].apply(_book_boost) * TOP_TAG_BOOST_FACTOR
     df["functional_relevance_score"] = (df["bias_corrected_score"] * (1.0 + boost)).clip(upper=1.0)
 
     logger.info(
@@ -213,6 +219,10 @@ def load_and_prepare(csv_path: Path | str | None = None) -> pd.DataFrame:
     df = load_csv(csv_path)
     df = _filter_read_books(df)
     df = _clean_text_columns(df)
+    
+    # Enrichissement avec persistance cohérente sur le même CSV source
+    input_path = Path(csv_path) if csv_path else CSV_PATH
+    df = enrich_dataframe_with_genres(df, source_csv_path=input_path)
     
     # Transformations temporelles et biais
     df = _parse_dates_to_years(df)

@@ -70,8 +70,9 @@ def init_profile(db_path: Path) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def save_profile(conn: sqlite3.Connection, df_processed) -> None:
+    """
     Sauvegarde le DataFrame traité dans les tables read_books et tag_weights.
-    df_processed doit avoir les colonnes : Book Id, Title, Author, Bookshelves,
+    df_processed doit avoir les colonnes : Book Id, Title, Author, Micro-genre,
     functional_relevance_score (ou bias_corrected_score).
     """
     score_col = (
@@ -92,7 +93,7 @@ def save_profile(conn: sqlite3.Connection, df_processed) -> None:
         author = str(row.get("Author", "")).strip()
         score = float(row.get(score_col, 0.0))
 
-        raw_tags = str(row.get("Bookshelves", ""))
+        raw_tags = str(row.get("Micro-genre", ""))
         tags = [
             t.strip().capitalize()
             for t in raw_tags.split(",")
