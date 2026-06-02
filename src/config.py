@@ -19,6 +19,8 @@ load_dotenv(_PROJECT_ROOT / ".env")
 # ── LLM ───────────────────────────────────────────────────────────────────────
 
 GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "gemini").lower()
+OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 ENRICHMENT_LLM_MODEL: str = os.getenv("ENRICHMENT_LLM_MODEL", "gemini-2.0-flash")
 ENRICHMENT_LLM_TEMPERATURE: float = float(os.getenv("ENRICHMENT_LLM_TEMPERATURE", "0.0"))
 
