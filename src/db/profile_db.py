@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS metadata (
     key         TEXT PRIMARY KEY,
     value       TEXT
 );
+
+CREATE TABLE IF NOT EXISTS tags_cache (
+    book_id     TEXT PRIMARY KEY,
+    tags        TEXT     -- JSON array
+);
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,6 +145,15 @@ def get_metadata(conn: sqlite3.Connection, key: str) -> str | None:
     return row[0] if row else None
 
 
+def save_tags_to_cache(conn: sqlite3.Connection, book_id: str, tags: list[str]) -> None:
+    """Sauvegarde les tags d'un livre dans le cache persistant."""
+    conn.execute(
+        "INSERT OR REPLACE INTO tags_cache (book_id, tags) VALUES (?, ?)",
+        (book_id, json.dumps(tags, ensure_ascii=False))
+    )
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Lecture
 # ─────────────────────────────────────────────────────────────────────────────
@@ -167,3 +181,12 @@ def get_stats(conn: sqlite3.Connection) -> dict:
     tags = conn.execute("SELECT COUNT(*) FROM tag_weights").fetchone()[0]
     last_updated = get_metadata(conn, "last_updated") or "jamais"
     return {"read_books": total, "unique_tags": tags, "last_updated": last_updated}
+
+
+def get_tags_from_cache(conn: sqlite3.Connection, book_id: str) -> list[str] | None:
+    """Récupère les tags d'un livre depuis le cache persistant s'ils existent."""
+    row = conn.execute("SELECT tags FROM tags_cache WHERE book_id = ?", (book_id,)).fetchone()
+    if row and row["tags"]:
+        return json.loads(row["tags"])
+    return None
+
