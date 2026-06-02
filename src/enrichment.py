@@ -191,17 +191,24 @@ FORMAT OBLIGATOIRE (JSON uniquement) :
             _TAGS_CACHE[cache_key] = final_tags
             return final_tags
             
+        except ResourceExhausted as exc:
+            logger.warning("⏳ Quota LLM atteint pour '%s'. Pause de 60 secondes...", title)
+            time.sleep(60)
         except json.JSONDecodeError:
             logger.error("❌ JSON Decode Error pour '%s'.", title)
         except Exception as exc:
-            logger.error("❌ Erreur pour '%s' : %s", title, exc)
-            if "quota" in str(exc).lower():
+            # Si c'est un autre type d'erreur 429 qui n'est pas rattrapé par ResourceExhausted
+            if "429" in str(exc) or "exhausted" in str(exc).lower() or "quota" in str(exc).lower():
+                logger.warning("⏳ Quota API détecté pour '%s'. Pause de 60 secondes...", title)
+                time.sleep(60)
+            else:
+                logger.error("❌ Erreur pour '%s' : %s", title, exc)
                 time.sleep(10 * (attempt + 1))
             
     _TAGS_CACHE[cache_key] = []
     return []
 
-def _process_single_book(idx: int, row: pd.Series) -> tuple[int, str]:
+def _process_single_book(idx: int, row: pd.Series) -> tuple[int, str, list[str]]:
     """Fonction exécutée par chaque thread (worker). Sans état partagé."""
     title = str(row.get("Title", "")).strip()
     author = str(row.get("Author", "")).strip()
@@ -219,28 +226,44 @@ def _process_single_book(idx: int, row: pd.Series) -> tuple[int, str]:
         tags_string = "Erreur LLM"
         
     logger.info("✅ [Thread] Terminé : '%s' -> %s", title, tags_string)
-    return idx, tags_string
+    return idx, tags_string, new_tags_list
 
 def enrich_dataframe_with_genres(df: pd.DataFrame, source_csv_path: Path | str | None = None) -> pd.DataFrame:
     logger.info("🚀 Début de l'enrichissement JSON Strict (Max Workers: %d)...", MAX_WORKERS)
+    
+    from db.profile_db import init_profile, get_connection, get_tags_from_cache, save_tags_to_cache
+    from config import PROFILE_DB_PATH
+    
+    init_profile(PROFILE_DB_PATH)
     
     df_result = df.copy()
     if "Micro-genre" not in df_result.columns:
         df_result["Micro-genre"] = ""
         
     books_to_process = []
-    for idx, row in df_result.iterrows():
-        current_tags = str(row.get("Micro-genre", "")).strip()
-        
-        needs_processing = False
-        if not current_tags or current_tags.lower() == "nan":
-            needs_processing = True
-        elif current_tags in ["Non classifié", "Erreur LLM"] and FORCE_REFRESH_UNCLASSIFIED:
-            needs_processing = True
+    
+    with get_connection(PROFILE_DB_PATH) as conn:
+        for idx, row in df_result.iterrows():
+            current_tags = str(row.get("Micro-genre", "")).strip()
+            book_id = str(row.get("Book Id", ""))
+            title = str(row.get("Title", "")).strip()
             
-        title = str(row.get("Title", "")).strip()
-        if needs_processing and title and title.lower() != "nan":
-            books_to_process.append((idx, row))
+            needs_processing = False
+            
+            if not current_tags or current_tags.lower() == "nan":
+                # Check le cache en priorité !
+                cached_tags = get_tags_from_cache(conn, book_id)
+                if cached_tags:
+                    df_result.at[idx, "Micro-genre"] = ", ".join(cached_tags)
+                    logger.debug("⚡ Cache touch pour '%s'", title)
+                    continue
+                else:
+                    needs_processing = True
+            elif current_tags in ["Non classifié", "Erreur LLM"] and FORCE_REFRESH_UNCLASSIFIED:
+                needs_processing = True
+                
+            if needs_processing and title and title.lower() != "nan":
+                books_to_process.append((idx, row))
 
     if not books_to_process:
         logger.info("Aucun livre à enrichir.")
@@ -258,9 +281,15 @@ def enrich_dataframe_with_genres(df: pd.DataFrame, source_csv_path: Path | str |
         
         for future in concurrent.futures.as_completed(futures):
             try:
-                idx, tags_string = future.result()
+                idx, tags_string, new_tags_list = future.result()
                 df_result.at[idx, "Micro-genre"] = tags_string
                 fetched_count += 1
+                
+                # Mise à jour du cache SQLite
+                if new_tags_list:
+                    book_id = str(df_result.at[idx, "Book Id"])
+                    with get_connection(PROFILE_DB_PATH) as conn:
+                        save_tags_to_cache(conn, book_id, new_tags_list)
                 
                 # Sauvegarde d'étape paramétrable
                 if fetched_count % SAVE_EVERY == 0:
