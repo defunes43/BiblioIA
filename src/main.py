@@ -33,10 +33,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("data/biblio.log", encoding="utf-8")
-    ]
 )
 logger = logging.getLogger(__name__)
 
