@@ -23,6 +23,8 @@ from api_client import search_books_google
 from config import (
     CSV_PATH,
     GOOGLE_API_KEY,
+    LLM_PROVIDER,
+    OLLAMA_BASE_URL,
     ENRICHMENT_LLM_MODEL,
     ENRICHMENT_LLM_TEMPERATURE,
     ENRICHMENT_MAX_WORKERS,
@@ -129,21 +131,39 @@ FORMAT OBLIGATOIRE (JSON uniquement) :
     max_retries = 4
     for attempt in range(max_retries):
         try:
-            llm = ChatGoogleGenerativeAI(
-                model=ENRICHMENT_LLM_MODEL, 
-                google_api_key=GOOGLE_API_KEY, 
-                temperature=ENRICHMENT_LLM_TEMPERATURE 
-            )
-            response = llm.invoke(prompt)
-            # response.content peut être une str ou une liste de blocs (ex: [{"type": "text", "text": "..."}])
-            raw_content = response.content if hasattr(response, 'content') else str(response)
-            if isinstance(raw_content, list):
-                text = " ".join(
-                    block.get("text", "") if isinstance(block, dict) else str(block)
-                    for block in raw_content
-                ).strip()
+            if LLM_PROVIDER == "ollama":
+                import requests
+                # Appel direct à l'API locale Ollama
+                response = requests.post(
+                    f"{OLLAMA_BASE_URL}/api/generate",
+                    json={
+                        "model": ENRICHMENT_LLM_MODEL,
+                        "prompt": prompt,
+                        "stream": False,
+                        "format": "json",
+                        "options": {
+                            "temperature": ENRICHMENT_LLM_TEMPERATURE
+                        }
+                    },
+                    timeout=120
+                )
+                response.raise_for_status()
+                text = response.json().get("response", "").strip()
             else:
-                text = str(raw_content).strip()
+                llm = ChatGoogleGenerativeAI(
+                    model=ENRICHMENT_LLM_MODEL, 
+                    google_api_key=GOOGLE_API_KEY, 
+                    temperature=ENRICHMENT_LLM_TEMPERATURE 
+                )
+                response = llm.invoke(prompt)
+                raw_content = response.content if hasattr(response, 'content') else str(response)
+                if isinstance(raw_content, list):
+                    text = " ".join(
+                        block.get("text", "") if isinstance(block, dict) else str(block)
+                        for block in raw_content
+                    ).strip()
+                else:
+                    text = str(raw_content).strip()
             
             # Extraction du bloc JSON
             start_idx = text.find('{')
