@@ -1,7 +1,7 @@
 services:
   biblio:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile
     container_name: biblio
     restart: unless-stopped
@@ -10,11 +10,11 @@ services:
     #   - l'export Goodreads CSV persiste entre les rebuilds
     #   - les fichiers SQLite (catalogue.db, profile.db) survivent aux redémarrages
     volumes:
-      - ../data:/app/data
+      - ./data:/app/data
 
     # Charge les variables d'environnement depuis .env à la racine du projet
     env_file:
-      - ../.env
+      - .env
 
     # Le conteneur lance src/scheduler.py par défaut.
     # Pour interagir avec BiblioIA :

@@ -10,10 +10,10 @@ Conçu pour tourner en tâche de fond sur un Raspberry Pi via Docker, BiblioIA g
 
 ```
 biblioIA/
+├── docker-compose.yml        ← Déploiement avec volume persistant
 ├── docker/
-│   ├── Dockerfile                ← Image Python 3.11-slim (compatible ARM64)
-│   └── docker-compose.yml        ← Déploiement avec volume persistant
-├── data/                         ← Volume Docker persistant
+│   └── Dockerfile            ← Image Python 3.11-slim (compatible ARM64)
+├── data/                     ← Volume Docker persistant
 │   ├── goodreads_library_export.csv  ← Votre historique (à fournir)
 │   ├── catalogue.db              ← Base SQLite du catalogue SFF générée automatiquement
 │   └── profile.db                ← Base SQLite de votre profil (tags pondérés)
