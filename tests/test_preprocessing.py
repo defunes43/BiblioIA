@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from preprocessing import (
     _parse_dates_to_years,
+    apply_micro_genre_relevance_boost,
     apply_author_bias_correction,
     apply_older_books_rule,
     apply_recency_bias_correction,
@@ -223,3 +224,31 @@ def test_bias_corrected_score_normalized() -> None:
 
     assert df["bias_corrected_score"].min() >= 0.0
     assert df["bias_corrected_score"].max() <= 1.0
+
+
+def test_micro_genre_boost_adds_functional_score_column() -> None:
+    """Le bonus micro-genre doit produire une colonne de score fonctionnel bornée."""
+    df = _make_base_df()
+    df = _parse_dates_to_years(df)
+    df = apply_author_bias_correction(df)
+    df = apply_recency_bias_correction(df)
+    df = compute_bias_corrected_score(df)
+    df = apply_micro_genre_relevance_boost(df)
+
+    assert "functional_relevance_score" in df.columns
+    assert (df["functional_relevance_score"] >= 0.0).all()
+    assert (df["functional_relevance_score"] <= 1.0).all()
+
+
+def test_micro_genre_boost_preserves_ordering_signal() -> None:
+    """Le boost ne doit pas inverser complètement la logique de score historique."""
+    df = _make_base_df()
+    df = _parse_dates_to_years(df)
+    df = apply_author_bias_correction(df)
+    df = apply_recency_bias_correction(df)
+    df = compute_bias_corrected_score(df)
+    df = apply_micro_genre_relevance_boost(df)
+
+    top_bias = df.sort_values("bias_corrected_score", ascending=False)["Title"].head(2).tolist()
+    top_func = df.sort_values("functional_relevance_score", ascending=False)["Title"].head(3).tolist()
+    assert any(title in top_func for title in top_bias)

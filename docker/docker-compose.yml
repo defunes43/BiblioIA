@@ -1,0 +1,22 @@
+services:
+  biblio:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: biblio
+    restart: unless-stopped
+
+    # Le répertoire data/ est monté en volume :
+    #   - l'export Goodreads CSV persiste entre les rebuilds
+    #   - les fichiers SQLite (catalogue.db, profile.db) survivent aux redémarrages
+    volumes:
+      - ../data:/app/data
+
+    # Charge les variables d'environnement depuis .env à la racine du projet
+    env_file:
+      - ../.env
+
+    # Le conteneur lance src/scheduler.py par défaut.
+    # Pour interagir avec BiblioIA :
+    #   docker exec -it biblio python src/main.py recommend
+    #   docker exec -it biblio python src/main.py status
