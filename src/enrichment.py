@@ -191,11 +191,18 @@ FORMAT OBLIGATOIRE (JSON uniquement) :
             _TAGS_CACHE[cache_key] = final_tags
             return final_tags
             
+        except ResourceExhausted as exc:
+            logger.warning("⏳ Quota LLM atteint pour '%s'. Pause de 60 secondes...", title)
+            time.sleep(60)
         except json.JSONDecodeError:
             logger.error("❌ JSON Decode Error pour '%s'.", title)
         except Exception as exc:
-            logger.error("❌ Erreur pour '%s' : %s", title, exc)
-            if "quota" in str(exc).lower():
+            # Si c'est un autre type d'erreur 429 qui n'est pas rattrapé par ResourceExhausted
+            if "429" in str(exc) or "exhausted" in str(exc).lower() or "quota" in str(exc).lower():
+                logger.warning("⏳ Quota API détecté pour '%s'. Pause de 60 secondes...", title)
+                time.sleep(60)
+            else:
+                logger.error("❌ Erreur pour '%s' : %s", title, exc)
                 time.sleep(10 * (attempt + 1))
             
     _TAGS_CACHE[cache_key] = []
