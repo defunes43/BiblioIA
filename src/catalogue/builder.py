@@ -2,7 +2,7 @@
 builder.py — Orchestrateur du catalogue SFF.
 
 Pipeline :
-1. Récupère les livres SFF depuis Open Library (par sujet)
+1. Récupère les livres SFF depuis les dumps Open Library (format txt.gz)
 2. Les insère dans catalogue.db (upsert, idempotent)
 3. Pour les livres non encore enrichis :
    a. Vérifie disponibilité ebook FR via Google Books
@@ -14,6 +14,7 @@ Le builder est REPRABLE : si interrompu, il reprend où il s'est arrêté
 (books avec enriched_at IS NULL).
 
 Optimisation clé :
+- Utilisation des dumps txt.gz au lieu de l'API → réduction drastique du trafic réseau
 - Seuls les livres confirmés ebook FR passent par le LLM → ~80% d'appels évités.
 - MAX_WORKERS contrôle la parallélisation (défaut 2 pour Raspberry Pi).
 """
@@ -58,8 +59,10 @@ def ingest_from_openlibrary(
     max_per_subject: int = 25000,
 ) -> int:
     """
-    Récupère les livres SFF depuis Open Library et les insère dans le catalogue.
-    Retourne le nombre de nouveaux livres insérés.
+    Récupère les livres SFF depuis les dumps Open Library au format txt.gz
+    et les insère dans le catalogue. Retourne le nombre de nouveaux livres insérés.
+    
+    Les dumps sont attendus dans /data/works.txt.gz
     """
     inserted = 0
     batch: list[dict] = []
