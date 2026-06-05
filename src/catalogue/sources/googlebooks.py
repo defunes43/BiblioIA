@@ -29,12 +29,13 @@ def check_french_ebook(title: str, author: str) -> EbookCheckResult:
     Vérifie si un livre est disponible en ebook ET en français via Google Books.
 
     Stratégie :
-    1. Recherche stricte (intitle + inauthor)
-    2. Si rien → recherche large (texte libre)
-    3. Pour chaque résultat : langue = 'fr' ET isEbook = True → ✅
+    1. Recherche avec restriction de langue française (langRestrict=fr)
+    2. Recherche stricte (intitle + inauthor) avec langRestrict=fr
+    3. Si rien → recherche large (texte libre) avec langRestrict=fr
+    4. Pour chaque résultat : langue = 'fr' ET isEbook = True → ✅
     """
     for strict in (True, False):
-        items = search_books_google(title, author, strict_search=strict)
+        items = search_books_google(title, author, strict_search=strict, lang_restrict='fr')
         if not items:
             continue
 
