@@ -157,34 +157,4 @@ def fetch_all_sff_works(max_per_subject: int = 25000) -> Iterator[dict]:
     logger.info("Traitement terminé : %d livres SFF uniques trouvés dans les dumps", total)
 
 
-def fetch_all_sff_works(max_per_subject: int = 25000) -> Iterator[dict]:
-    """
-    Itère sur tous les sujets SFF et retourne chaque livre sans doublon.
 
-    max_per_subject : limite le nombre de livres par sujet (évite les géants
-    comme 'science_fiction' qui a 500 000+ entrées).
-    """
-    seen_ids: set[str] = set()
-    total = 0
-
-    for subject in SFF_SUBJECTS:
-        count_for_subject = 0
-        logger.info("── Récupération du sujet : %s", subject)
-
-        for book in fetch_subject_works(subject):
-            if book["id"] in seen_ids:
-                continue
-            seen_ids.add(book["id"])
-
-            yield book
-            count_for_subject += 1
-            total += 1
-
-            if count_for_subject >= max_per_subject:
-                logger.info(
-                    "Sujet '%s' : limite de %d atteinte, passage au suivant.",
-                    subject, max_per_subject,
-                )
-                break
-
-    logger.info("Total livres SFF uniques récupérés depuis Open Library : %d", total)
