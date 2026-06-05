@@ -1,25 +1,28 @@
 """
 openlibrary.py — Client Open Library pour la découverte de livres SFF.
 
-Open Library est une API publique sans authentification.
-On interroge par sujet SFF pour obtenir un catalogue de base,
-qui sera ensuite filtré (ebook FR) et enrichi (tags LLM).
+Utilisation des dumps Open Library au format txt.gz au lieu de l'API pour réduire
+le traffic réseau et profiter des données complètes.
 
-Docs : https://openlibrary.org/developers/api
+Documentation Open Library : https://openlibrary.org/dumps
 """
 
 from __future__ import annotations
 
+import gzip
+import json
 import logging
-import time
+from pathlib import Path
 from typing import Iterator
-
-import requests
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://openlibrary.org"
-_PAGE_SIZE = 100  # Max autorisé par l'API subjects
+# Chemin vers les dumps
+DUMP_DIR = Path("/data")
+
+# Types de dump à utiliser
+WORKS_DUMP = "works.txt.gz"
+EDITIONS_DUMP = "editions.txt.gz"
 
 # Sujets SFF ciblés — on cible le fond du catalogue, pas juste les bestsellers.
 # Les sujets Open Library sont en snake_case.
@@ -29,88 +32,129 @@ SFF_SUBJECTS = [
 ]
 
 
-def _get(url: str, params: dict | None = None, retries: int = 3) -> dict | None:
-    """GET avec retry exponentiel."""
-    for attempt in range(1, retries + 1):
-        try:
-            resp = requests.get(url, params=params, timeout=15)
-            if resp.status_code == 429:
-                wait = 5 * attempt
-                logger.warning("Rate limit Open Library — attente %ds", wait)
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException as exc:
-            if attempt == retries:
-                logger.error("Erreur Open Library [%s] : %s", url, exc)
-                return None
-            time.sleep(2**attempt)
-    return None
-
-
-def fetch_subject_works(subject: str) -> Iterator[dict]:
+def _parse_dump_line(line: str) -> dict | None:
     """
-    Génère tous les livres d'un sujet Open Library (pagination automatique).
-
-    Chaque dict retourné a les clés : id, title, author, year_published, source.
+    Parse une ligne de dump Open Library (format TSV avec JSON).
+    
+    Format : type\tkey\trevision\tlast_modified\tJSON
     """
-    offset = 0
-    total_fetched = 0
+    try:
+        parts = line.strip().split('\t')
+        if len(parts) != 5:
+            return None
+        
+        record_type, key, revision, last_modified, json_data = parts
+        
+        # Extrait l'ID unique (ex: "/works/OL27516W" → "OL27516W")
+        unique_id = key.split('/')[-1] if '/' in key else key
+        
+        return {
+            "type": record_type,
+            "key": key,
+            "id": unique_id,
+            "revision": int(revision),
+            "last_modified": last_modified,
+            "data": json.loads(json_data)
+        }
+    except (ValueError, json.JSONDecodeError) as e:
+        logger.debug("Erreur de parsing de ligne : %s", e)
+        return None
 
-    while True:
-        url = f"{_BASE_URL}/subjects/{subject}.json"
-        data = _get(url, params={"limit": _PAGE_SIZE, "offset": offset})
 
-        if not data:
-            break
+def _load_dump_file(dump_file: str) -> Iterator[dict]:
+    """
+    Charge un fichier dump .txt.gz et retourne les enregistrements.
+    Lit ligne par ligne pour minimiser l'utilisation mémoire.
+    """
+    dump_path = DUMP_DIR / dump_file
+    if not dump_path.exists():
+        logger.error("Fichier dump non trouvé : %s", dump_path)
+        return
+    
+    logger.info("Chargement du dump : %s (lecture ligne par ligne)", dump_path)
+    
+    with gzip.open(dump_path, 'rt', encoding='utf-8') as f:
+        for line_num, line in enumerate(f, 1):
+            if line_num % 50000 == 0:  # Log moins fréquent pour ne pas ralentir
+                logger.debug("Traitement ligne %d du dump %s", line_num, dump_file)
+            
+            record = _parse_dump_line(line)
+            if record:
+                yield record
 
-        works = data.get("works", [])
-        if not works:
-            break
 
-        # Récupère le total à la première page pour le log
-        if offset == 0:
-            work_count = data.get("work_count", "?")
-            logger.info(
-                "Sujet '%s' : %s œuvres au total, récupération par pages de %d.",
-                subject, work_count, _PAGE_SIZE,
-            )
-
-        for work in works:
-            # Extraction de l'auteur (peut être une liste)
-            authors_raw = work.get("authors", [])
-            if authors_raw:
-                author = authors_raw[0].get("name", "Auteur inconnu")
-            else:
-                author = "Auteur inconnu"
-
-            # L'ID Open Library est de la forme "/works/OL27516W" → on prend la partie unique
-            ol_key = work.get("key", "")
-            book_id = ol_key.replace("/works/", "ol_") if ol_key else ""
-
-            if not book_id or not work.get("title"):
-                continue
-
-            yield {
-                "id": book_id,
-                "title": work.get("title", "").strip(),
-                "title_fr": None,  # Sera rempli si traduction FR trouvée via Google Books
-                "author": author.strip(),
-                "year_published": work.get("first_publish_year"),
-                "source": "openlibrary",
-            }
-            total_fetched += 1
-
-        offset += _PAGE_SIZE
-        # Petite pause pour ne pas surcharger l'API (pas de limite officielle documentée)
-        time.sleep(0.5)
-
-        # Arrêt si on a dépassé le total déclaré
-        if offset >= data.get("work_count", 0):
-            break
-
-    logger.info("Sujet '%s' : %d livres récupérés.", subject, total_fetched)
+def fetch_all_sff_works(max_per_subject: int = 25000) -> Iterator[dict]:
+    """
+    Itère sur tous les sujets SFF depuis les dumps Open Library et retourne chaque livre sans doublon.
+    
+    Utilise le dump 'works.txt.gz' et filtre par sujet dans les données JSON.
+    Lecture ligne par ligne pour une faible utilisation mémoire.
+    
+    max_per_subject : limite le nombre de livres par sujet (évite les géants
+    comme 'science_fiction' qui a 500 000+ entrées).
+    """
+    seen_ids: set[str] = set()
+    total = 0
+    subject_counts = {subject: 0 for subject in SFF_SUBJECTS}
+    
+    logger.info("Début du traitement du dump works.txt.gz...")
+    
+    for record in _load_dump_file(WORKS_DUMP):
+        work_data = record["data"]
+        work_id = record["id"]
+        
+        # Vérification rapide des doublons
+        if work_id in seen_ids:
+            continue
+            
+        # Vérifie si le travail est dans les sujets SFF (optimisé)
+        subjects = work_data.get("subjects", [])
+        has_sff_subject = False
+        
+        for subject in subjects:
+            # Normalise le sujet pour correspondre à notre liste
+            normalized_subject = subject.lower().replace(' ', '_')
+            if normalized_subject in SFF_SUBJECTS:
+                has_sff_subject = True
+                subject_counts[normalized_subject] += 1
+                
+                # Vérifie la limite par sujet
+                if subject_counts[normalized_subject] > max_per_subject:
+                    logger.info(
+                        "Sujet '%s' : limite de %d atteinte, arrêt de la collecte pour ce sujet.",
+                        normalized_subject, max_per_subject,
+                    )
+                    return
+                break
+        
+        if not has_sff_subject:
+            continue
+        
+        # Extraction de l'auteur (optimisé)
+        authors_raw = work_data.get("authors", [])
+        author = authors_raw[0].get("name", "Auteur inconnu") if authors_raw else "Auteur inconnu"
+        
+        # Validation rapide
+        if not work_data.get("title"):
+            continue
+        
+        seen_ids.add(work_id)
+        total += 1
+        
+        # Logs de progression moins fréquents
+        if total % 100000 == 0:
+            logger.info("Progression : %d livres traités", total)
+        
+        yield {
+            "id": f"ol_{work_id}",
+            "title": work_data.get("title", "").strip(),
+            "title_fr": None,  # Sera rempli si traduction FR trouvée via Google Books
+            "author": author.strip(),
+            "year_published": work_data.get("first_publish_year"),
+            "source": "openlibrary",
+        }
+    
+    logger.info("Traitement terminé : %d livres SFF uniques trouvés dans les dumps", total)
 
 
 def fetch_all_sff_works(max_per_subject: int = 25000) -> Iterator[dict]:
