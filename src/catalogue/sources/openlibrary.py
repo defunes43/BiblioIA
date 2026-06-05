@@ -26,16 +26,6 @@ _PAGE_SIZE = 100  # Max autorisé par l'API subjects
 SFF_SUBJECTS = [
     "science_fiction",
     "fantasy",
-    "space_opera",
-    "cyberpunk",
-    "dystopian_fiction",
-    "hard_science_fiction",
-    "epic_fantasy",
-    "dark_fantasy",
-    "steampunk",
-    "military_science_fiction",
-    "science_fantasy",
-    "post-apocalyptic_fiction",
 ]
 
 
@@ -123,7 +113,7 @@ def fetch_subject_works(subject: str) -> Iterator[dict]:
     logger.info("Sujet '%s' : %d livres récupérés.", subject, total_fetched)
 
 
-def fetch_all_sff_works(max_per_subject: int = 500) -> Iterator[dict]:
+def fetch_all_sff_works(max_per_subject: int = 25000) -> Iterator[dict]:
     """
     Itère sur tous les sujets SFF et retourne chaque livre sans doublon.
 

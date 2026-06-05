@@ -52,7 +52,8 @@ def search_books_google(
     author: str = "",
     isbn: str = "",
     max_retries: int = 3,
-    strict_search: bool = True
+    strict_search: bool = True,
+    lang_restrict: str = None
 ) -> list[dict[str, Any]]:
     """Cherche des livres et retourne la liste des items."""
     
@@ -68,9 +69,13 @@ def search_books_google(
     params: dict[str, str] = {"q": query, "maxResults": "5"}
     if GOOGLE_BOOKS_API_KEY:
         params["key"] = GOOGLE_BOOKS_API_KEY
+    if lang_restrict:
+        params["langRestrict"] = lang_restrict
 
     # Log de l'URL pour debug (SANS la clé API)
     safe_url = f"{GOOGLE_BOOKS_BASE_URL}?q={query}&maxResults=5"
+    if lang_restrict:
+        safe_url += f"&langRestrict={lang_restrict}"
     logger.info("   [API Search] GET %s", safe_url)
 
     for attempt in range(1, max_retries + 1):
@@ -91,7 +96,7 @@ def search_books_google(
                 logger.error("   [API Search] Erreur réseau : %s", exc)
                 return []
             time.sleep(2**attempt)
-            
+    
     return []
 
 
