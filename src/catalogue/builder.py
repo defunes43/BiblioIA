@@ -55,7 +55,7 @@ _SLEEP_BETWEEN_LLM = 1.0   # Secondes entre deux appels LLM (rate limiting doux)
 
 def ingest_from_openlibrary(
     db_path: Path,
-    max_per_subject: int = 500,
+    max_per_subject: int = 25000,
 ) -> int:
     """
     Récupère les livres SFF depuis Open Library et les insère dans le catalogue.
