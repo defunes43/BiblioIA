@@ -18,7 +18,7 @@ from typing import Iterator
 logger = logging.getLogger(__name__)
 
 # Chemin vers les dumps
-DUMP_DIR = Path("/data")
+DUMP_DIR = Path("data")
 
 # Types de dump à utiliser
 WORKS_DUMP = "works.txt.gz"
