@@ -24,9 +24,8 @@ logger = logging.getLogger(__name__)
 DUMP_DIR = Path("data")
 
 # Types de dump à utiliser
-WORKS_DUMP = "ol_dump_works_2026-05-31.txt.gz"
-EDITIONS_DUMP = "editions.txt.gz"
-AUTHORS_DUMP = "ol_dump_authors_2026-05-31.txt.gz"
+WORKS_DUMP = "works.txt.gz"
+AUTHORS_DUMP = "authors.txt.gz"
 
 # Sujets SFF ciblés — on cible le fond du catalogue, pas juste les bestsellers.
 # Les sujets Open Library sont en snake_case.
