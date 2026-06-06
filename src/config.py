@@ -89,3 +89,13 @@ def validate() -> None:
             f"Variables d'environnement manquantes : {', '.join(missing)}\n"
             "Copie .env.example vers .env et remplis les valeurs requises."
         )
+
+# ── Noosfere Scraper ───────────────────────────────────────────────────────────
+
+# Délai entre les requêtes HTTP (en secondes) - généreux pour respecter le site
+NOOSFERE_BASE_DELAY: float = float(os.getenv("NOOSFERE_BASE_DELAY", "2.0"))
+NOOSFERE_MAX_RETRIES: int = int(os.getenv("NOOSFERE_MAX_RETRIES", "3"))
+
+# Base de données de la file d'attente de scraping
+_SCRAPING_QUEUE = Path(os.getenv("SCRAPING_QUEUE_DB_PATH", "data/scraping_queue.db"))
+SCRAPING_QUEUE_DB_PATH: Path = _SCRAPING_QUEUE if _SCRAPING_QUEUE.is_absolute() else _PROJECT_ROOT / _SCRAPING_QUEUE

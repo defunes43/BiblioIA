@@ -5,7 +5,11 @@ Commandes disponibles :
   build-catalogue   Construit ou met à jour le catalogue SFF (tâche longue)
   update-profile    Retraite l'export Goodreads CSV et reconstruit le profil
   recommend         Affiche le Top N recommandations (instantané)
-  status            Affiche les statistiques catalogue + profil
+  status            Affiche les statistiques catalogue + profil + noosfere
+  noosfere-init    Initialise la file d'attente Noosfere (bootstrap)
+  noosfere-process-month  Scrape les livres d'un mois sur Noosfere
+  noosfere-process-queue  Traite la file d'attente et ajoute au catalogue
+  noosfere-debug-single   Debug: scraper un seul livre avec logs détaillés
 
 Exemples :
   python src/main.py build-catalogue
@@ -13,6 +17,10 @@ Exemples :
   python src/main.py recommend
   python src/main.py recommend --genre "Space Opera" --n 10
   python src/main.py status
+  python src/main.py noosfere-init
+  python src/main.py noosfere-process-month --year 2024 --month 5
+  python src/main.py noosfere-process-queue
+  python src/main.py noosfere-debug-single --numlivre 2146591788
 """
 
 from __future__ import annotations
@@ -75,6 +83,105 @@ def cmd_build_catalogue(args: argparse.Namespace) -> None:
 
     console.print("\n[bold green]✅ Catalogue construit avec succès.[/]")
     console.print(f"[dim]Lance 'python src/main.py status' pour voir les statistiques.[/]")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Commande : noosfere-init
+# ─────────────────────────────────────────────────────────────────────────────
+
+def cmd_noosfere_init(args: argparse.Namespace) -> None:
+    """Initialise la file d'attente en scrapant les années 1950-2025."""
+    from catalogue.sources.noosfere import initialize_scraping_queue, get_queue_stats
+
+    console, Table, Panel, box = _get_rich()
+    console.print(Panel(
+        "[bold cyan]BiblioIA v2[/] — Initialisation Noosfere\n"
+        f"[dim]DB queue : {config.SCRAPING_QUEUE_DB_PATH}[/]",
+        border_style="cyan",
+    ))
+
+    total = initialize_scraping_queue(
+        db_path=config.SCRAPING_QUEUE_DB_PATH,
+        start_year=1950,
+        end_year=2025,
+        delay=config.NOOSFERE_BASE_DELAY,
+    )
+
+    stats = get_queue_stats(config.SCRAPING_QUEUE_DB_PATH)
+    console.print(f"\n[bold green]✅ Initialisation terminée : {total} livres ajoutés.[/]")
+    console.print(f"[dim]Pending: {stats['pending']}[/]")
+
+
+def cmd_noosfere_process_month(args: argparse.Namespace) -> None:
+    """Scrape les livres d'un mois et les ajoute à la file d'attente."""
+    from catalogue.sources.noosfere import process_month_scraping, get_queue_stats
+
+    console, Table, Panel, box = _get_rich()
+    console.print(Panel(
+        f"[bold cyan]BiblioIA v2[/] — Scraping Noosfere : {args.year}/{args.month}\n"
+        f"[dim]DB queue : {config.SCRAPING_QUEUE_DB_PATH}[/]",
+        border_style="cyan",
+    ))
+
+    added = process_month_scraping(
+        year=args.year,
+        month=args.month,
+        db_path=config.SCRAPING_QUEUE_DB_PATH,
+        delay=config.NOOSFERE_BASE_DELAY,
+    )
+
+    stats = get_queue_stats(config.SCRAPING_QUEUE_DB_PATH)
+    console.print(f"\n[bold green]✅ {added} livres ajoutés depuis le mois {args.month}/{args.year}.[/]")
+    console.print(f"[dim]Total pending: {stats['pending']}[/]")
+
+
+def cmd_noosfere_process_queue(args: argparse.Namespace) -> None:
+    """Traite la file d'attente et ajoute les livres au catalogue."""
+    from catalogue.sources.noosfere import process_scraping_queue, get_queue_stats
+
+    console, Table, Panel, box = _get_rich()
+    console.print(Panel(
+        "[bold cyan]BiblioIA v2[/] — Traitement file d'attente Noosfere\n"
+        f"[dim]DB queue : {config.SCRAPING_QUEUE_DB_PATH}[/]\n"
+        f"[dim]DB catalogue : {config.CATALOGUE_DB_PATH}[/]",
+        border_style="cyan",
+    ))
+
+    processed = process_scraping_queue(
+        queue_db_path=config.SCRAPING_QUEUE_DB_PATH,
+        catalogue_db_path=config.CATALOGUE_DB_PATH,
+        delay=config.NOOSFERE_BASE_DELAY,
+        batch_size=50,
+    )
+
+    stats = get_queue_stats(config.SCRAPING_QUEUE_DB_PATH)
+    console.print(f"\n[bold green]✅ {processed} livres traités et ajoutés au catalogue.[/]")
+    console.print(f"[dim]Enriched: {stats['enriched']}[/]")
+
+
+def cmd_noosfere_debug_single(args: argparse.Namespace) -> None:
+    """Scraper un seul livre avec logs de debug détaillés."""
+    from catalogue.sources.noosfere import debug_scrape_single_book
+
+    console, Table, Panel, box = _get_rich()
+    console.print(Panel(
+        f"[bold cyan]BiblioIA v2[/] — Debug scraping Noosfere\n"
+        f"[dim]numlivre = {args.numlivre}[/]",
+        border_style="cyan",
+    ))
+
+    result = debug_scrape_single_book(
+        numlivre=args.numlivre,
+        catalogue_db_path=config.CATALOGUE_DB_PATH,
+    )
+
+    if result.success:
+        console.print(f"\n[bold green]✅ Scraping réussi.[/]")
+        console.print(f"   Titre : {result.title}")
+        console.print(f"   Auteur : {result.author}")
+        console.print(f"   Résumé ({len(result.summary)} car) : {result.summary[:100]}...")
+    else:
+        console.print(f"\n[red]❌ Scraping échoué : {result.error}[/]")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,9 +340,10 @@ def _score_bar(score: float) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def cmd_status(args: argparse.Namespace) -> None:
-    """Affiche les statistiques du catalogue et du profil."""
+    """Affiche les statistiques du catalogue, du profil et de la file d'attente Noosfere."""
     from db.catalogue_db import get_connection as cat_conn, get_stats as cat_stats, init_catalogue
     from db.profile_db import get_connection as prof_conn, get_stats as prof_stats, init_profile
+    from catalogue.sources.noosfere import get_queue_stats as get_scraping_stats
 
     console, Table, Panel, box = _get_rich()
     console.print(Panel("[bold cyan]BiblioIA v2[/] — Statut", border_style="cyan"))
@@ -255,6 +363,19 @@ def cmd_status(args: argparse.Namespace) -> None:
         table.add_row("   DB", str(config.CATALOGUE_DB_PATH))
     else:
         table.add_row("Catalogue", "[red]Non construit — lance build-catalogue[/]")
+
+    table.add_row("", "")
+
+    # Noosfere scraping queue
+    if config.SCRAPING_QUEUE_DB_PATH.exists():
+        sq_stats = get_scraping_stats(config.SCRAPING_QUEUE_DB_PATH)
+        table.add_row("Noosfere — file d'attente", str(sq_stats["total"]))
+        table.add_row("   Pending", str(sq_stats["pending"]))
+        table.add_row("   Scraped", str(sq_stats["scraped"]))
+        table.add_row("   Enriched", str(sq_stats["enriched"]))
+        table.add_row("   DB", str(config.SCRAPING_QUEUE_DB_PATH))
+    else:
+        table.add_row("Noosfere queue", "[dim]Non initialisée[/]")
 
     table.add_row("", "")
 
@@ -318,6 +439,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Nombre de recommandations à afficher (défaut: 15)",
     )
     p_rec.set_defaults(func=cmd_recommend)
+
+    # noosfere-init
+    p_noosfere_init = sub.add_parser("noosfere-init", help="Initialise la file d'attente Noosfere (bootstrap)")
+    p_noosfere_init.set_defaults(func=cmd_noosfere_init)
+
+    # noosfere-process-month
+    p_noosfere_month = sub.add_parser("noosfere-process-month", help="Scrape les livres d'un mois sur Noosfere")
+    p_noosfere_month.add_argument(
+        "--year", type=int, required=True, metavar="YEAR",
+        help="Année à scraper (ex: 2024)",
+    )
+    p_noosfere_month.add_argument(
+        "--month", type=int, required=True, metavar="MONTH",
+        help="Mois à scraper (1-12)",
+    )
+    p_noosfere_month.set_defaults(func=cmd_noosfere_process_month)
+
+    # noosfere-process-queue
+    p_noosfere_queue = sub.add_parser("noosfere-process-queue", help="Traite la file d'attente Noosfere")
+    p_noosfere_queue.set_defaults(func=cmd_noosfere_process_queue)
+
+    # noosfere-debug-single
+    p_noosfere_debug = sub.add_parser("noosfere-debug-single", help="Debug: scraper un seul livre avec logs détaillés")
+    p_noosfere_debug.add_argument(
+        "--numlivre", required=True, metavar="NUMLIVRE",
+        help="numlivre du livre à scraper (ex: 2146591788)",
+    )
+    p_noosfere_debug.set_defaults(func=cmd_noosfere_debug_single)
 
     # status
     p_status = sub.add_parser("status", help="Affiche les statistiques catalogue + profil")

@@ -1,7 +1,9 @@
 """
 scheduler.py — Tâche de fond pour le conteneur Docker.
 
-Garde le conteneur en vie et exécute build-catalogue toutes les semaines.
+Garde le conteneur en vie et exécute:
+- build-catalogue chaque dimanche
+- noosfere-process-month le 10 de chaque mois (mois précédent)
 Remplace l'usage de cron sur l'hôte, rendant le conteneur 100% autonome.
 """
 
@@ -9,6 +11,7 @@ import logging
 import subprocess
 import time
 import sys
+from datetime import date
 from pathlib import Path
 
 # Assure que le dossier src/ est dans le path
@@ -27,18 +30,16 @@ logger = logging.getLogger("scheduler")
 
 _last_csv_mtime = 0.0
 
+
 def check_and_update_profile():
     """Vérifie si le CSV a été modifié, et lance update-profile si c'est le cas."""
     global _last_csv_mtime
     try:
         if config.CSV_PATH.exists():
             current_mtime = config.CSV_PATH.stat().st_mtime
-            # Si le fichier est plus récent que la dernière vérification
             if current_mtime > _last_csv_mtime:
-                # On évite de lancer au tout premier démarrage si le profil est déjà à jour
                 if _last_csv_mtime == 0.0:
                     _last_csv_mtime = current_mtime
-                    # On lance quand même une fois au démarrage (le MD5 bloquera si déjà à jour)
                 else:
                     logger.info("Nouveau fichier CSV détecté ! Lancement de la mise à jour du profil...")
                     _last_csv_mtime = current_mtime
@@ -52,11 +53,11 @@ def check_and_update_profile():
     except Exception as exc:
         logger.error("Erreur lors de la vérification du CSV : %s", exc)
 
+
 def run_build_catalogue():
     """Exécute la mise à jour du catalogue en sous-processus."""
     logger.info("Démarrage de la tâche hebdomadaire : build-catalogue")
     try:
-        # On appelle le script de la même manière que la CLI
         subprocess.run(
             [sys.executable, "src/main.py", "build-catalogue"],
             check=True
@@ -65,20 +66,46 @@ def run_build_catalogue():
     except subprocess.CalledProcessError as exc:
         logger.error("Erreur lors de l'exécution de build-catalogue : %s", exc)
 
+
+def run_noosfere_month_scraping():
+    """Scrape les livres du mois précédent sur Noosfere le 10 de chaque mois."""
+    today = date.today()
+    if today.day != 10:
+        return
+    
+    year = today.year
+    month = today.month - 1 if today.month > 1 else 12
+    if today.month == 1:
+        year = today.year - 1
+    
+    logger.info("Démarrage du scraping Noosfere pour %d/%d", month, year)
+    try:
+        subprocess.run(
+            [sys.executable, "src/main.py", "noosfere-process-month", "--year", str(year), "--month", str(month)],
+            check=True
+        )
+        logger.info("Scraping Noosfere terminé avec succès.")
+        
+        subprocess.run(
+            [sys.executable, "src/main.py", "noosfere-process-queue"],
+            check=True
+        )
+        logger.info("Traitement file d'attente Noosfere terminé.")
+    except subprocess.CalledProcessError as exc:
+        logger.error("Erreur lors du scraping Noosfere : %s", exc)
+
+
 def main():
     logger.info("Scheduler autonome démarré.")
     logger.info("Le catalogue sera mis à jour chaque dimanche à 03:00.")
+    logger.info("Le scraping Noosfere aura lieu chaque 10, traitant le mois précédent.")
     
-    # Programmation hebdomadaire le dimanche à 3h du matin
     schedule.every().sunday.at("03:00").do(run_build_catalogue)
-    
-    # Vérification toutes les 5 minutes pour un nouveau CSV
+    schedule.every().day.at("10:00").do(run_noosfere_month_scraping)
     schedule.every(5).minutes.do(check_and_update_profile)
     
-    # Lancement immédiat au démarrage pour vérifier l'état
     check_and_update_profile()
     
-    # Boucle infinie
     while True:
         schedule.run_pending()
         time.sleep(60)
