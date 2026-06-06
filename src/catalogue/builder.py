@@ -77,7 +77,7 @@ def ingest_from_openlibrary(
             count = stats_after - stats_before
         return count
 
-    for book in fetch_all_sff_works(max_per_subject=max_per_subject):
+    for book in fetch_all_sff_works(max_per_subject=max_per_subject, hybrid=True, num_processes=2):
         batch.append(book)
         if len(batch) >= _BATCH_SIZE:
             inserted += _flush_batch(batch)
