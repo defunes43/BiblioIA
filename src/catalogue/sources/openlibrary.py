@@ -9,19 +9,20 @@ Documentation Open Library : https://openlibrary.org/dumps
 
 from __future__ import annotations
 
+import atexit
 import gzip
 import json
 import logging
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from queue import Queue
 from typing import Iterator
 
 logger = logging.getLogger(__name__)
 
 # Chemin vers les dumps
-DUMP_DIR = Path("data")
+DUMP_DIR = Path("C:/data")
 
 # Types de dump à utiliser
 WORKS_DUMP = "works.txt.gz"
@@ -34,8 +35,10 @@ SFF_SUBJECTS = [
     "fantasy",
 ]
 
-# Cache des auteurs chargés
-_authors_cache: dict[str, str] = {}
+# Cache des auteurs chargés (limité)
+_authors_db_path: Path | None = None
+_authors_db_lock = threading.Lock()
+_cache_size_limit = 5000  # Limite le cache à 5000 auteurs
 
 
 def _parse_dump_line(line: str) -> dict | None:
@@ -270,44 +273,119 @@ def _load_dump_file_buffered(dump_file: str, buffer_size: int = 8192) -> Iterato
                 yield record
 
 
-def _load_authors_cache() -> dict[str, str]:
-    """
-    Charge et met en cache les auteurs depuis le dump authors.txt.gz.
-    Retourne un dict {author_key: author_name}
-    """
-    global _authors_cache
+def _get_authors_db_path() -> Path:
+    """Retourne le chemin de la base de données temporaire des auteurs."""
+    global _authors_db_path
+    if _authors_db_path is None:
+        with _authors_db_lock:
+            if _authors_db_path is None:
+                # Crée une base de données temporaire
+                _authors_db_path = Path("temp_authors.db")
+                _create_authors_db()
+    return _authors_db_path
+
+
+def _create_authors_db():
+    """Crée et remplit la base de données des auteurs."""
+    global _authors_db_path
     
-    if _authors_cache:
-        return _authors_cache
+    logger.info("Création de la base de données temporaire des auteurs...")
     
-    logger.info("Chargement du cache des auteurs...")
+    db_path = _authors_db_path
     
-    try:
-        for record in _load_dump_file(AUTHORS_DUMP):
-            if record["type"] == "/type/author":
-                author_data = record["data"]
-                author_key = record["key"]
-                author_name = author_data.get("name", "Auteur inconnu")
-                _authors_cache[author_key] = author_name
+    # Crée la table des auteurs
+    with sqlite3.connect(db_path) as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS authors (
+                key TEXT PRIMARY KEY,
+                name TEXT NOT NULL
+            )
+        ''')
         
-        logger.info("Cache des auteurs chargé : %d auteurs", len(_authors_cache))
-    except Exception as e:
-        logger.error("Erreur lors du chargement du cache des auteurs : %s", e)
-        # Continue avec un cache vide
-        _authors_cache = {}
-    
-    return _authors_cache
+        # Crée un index pour les recherches
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_authors_key ON authors(key)')
+        
+        # Importe les auteurs depuis le dump
+        count = 0
+        batch_size = 1000
+        batch = []
+        
+        try:
+            for record in _load_dump_file(AUTHORS_DUMP):
+                if record["type"] == "/type/author":
+                    author_data = record["data"]
+                    author_key = record["key"]
+                    author_name = author_data.get("name", "Auteur inconnu")
+                    
+                    batch.append((author_key, author_name))
+                    count += 1
+                    
+                    # Insère par batch
+                    if len(batch) >= batch_size:
+                        conn.executemany(
+                            'INSERT OR REPLACE INTO authors (key, name) VALUES (?, ?)',
+                            batch
+                        )
+                        conn.commit()
+                        batch.clear()
+                        
+                        if count % 10000 == 0:
+                            logger.info("Import de %d auteurs...", count)
+            
+            # Insère les restes
+            if batch:
+                conn.executemany(
+                    'INSERT OR REPLACE INTO authors (key, name) VALUES (?, ?)',
+                    batch
+                )
+                conn.commit()
+            
+            logger.info("Base de données des auteurs créée : %d auteurs", count)
+            
+        except Exception as e:
+            logger.error("Erreur lors de l'import des auteurs : %s", e)
+            # Supprime la base en cas d'erreur
+            if db_path.exists():
+                db_path.unlink()
+            raise
 
 
 def _get_author_name(author_key: str) -> str:
     """
-    Récupère le nom d'un auteur depuis le cache.
+    Récupère le nom d'un auteur depuis la base de données SQLite.
     """
-    # Charge le cache si nécessaire
-    if not _authors_cache:
-        _load_authors_cache()
+    if not author_key:
+        return "Auteur inconnu"
     
-    return _authors_cache.get(author_key, "Auteur inconnu")
+    try:
+        db_path = _get_authors_db_path()
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT name FROM authors WHERE key = ?', (author_key,))
+            result = cursor.fetchone()
+            return result[0] if result else "Auteur inconnu"
+            
+    except Exception as e:
+        logger.debug("Erreur lors de la recherche de l'auteur %s : %s", author_key, e)
+        return "Auteur inconnu"
+
+
+def cleanup_authors_db():
+    """Nettoie la base de données temporaire des auteurs."""
+    global _authors_db_path
+    if _authors_db_path and _authors_db_path.exists():
+        try:
+            import time
+            time.sleep(0.1)  # Laisse le temps aux connexions de se fermer
+            _authors_db_path.unlink()
+            logger.info("Base de données temporaire des auteurs nettoyée")
+        except Exception as e:
+            logger.warning("Erreur lors du nettoyage de la base temporaire : %s", e)
+    _authors_db_path = None
+
+
+# Nettoyage automatique à la fin du programme
+atexit.register(cleanup_authors_db)
 
 
 def fetch_all_sff_works(max_per_subject: int = 25000, 
@@ -331,8 +409,8 @@ def fetch_all_sff_works(max_per_subject: int = 25000,
         num_threads: Nombre de threads (pour l'approche hybride)
         hybrid: Utiliser l'approche hybride buffered + threading
     """
-    # Charge le cache des auteurs au début
-    _load_authors_cache()
+    # Initialise la base de données des auteurs (création au premier appel)
+    _get_authors_db_path()
     
     seen_ids: set[str] = set()
     total = 0
