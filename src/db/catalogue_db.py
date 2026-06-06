@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS books (
     description     TEXT,
     tags            TEXT,        -- JSON array: ["Space Opera", "IA", ...]
     enriched_at     TEXT,        -- ISO8601, NULL = pas encore enrichi
-    source          TEXT         -- 'openlibrary' | 'googlebooks'
+    source          TEXT         -- 'noosfere'
 );
 CREATE INDEX IF NOT EXISTS idx_ebook     ON books(is_ebook_fr);
 CREATE INDEX IF NOT EXISTS idx_enriched  ON books(enriched_at);

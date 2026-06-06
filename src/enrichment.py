@@ -1,9 +1,8 @@
 """
-enrichment.py — Enrichissement par JSON Strict & Règle de Tangibilité (Multithread).
+enrichment.py — Enrichissement par JSON Strict & Règle de Tangibilité.
 
-- Utilise l'API Google Books pour récupérer les résumés.
-- Utilise Gemini pour extraire des tropes matériels et techniques sous forme de JSON.
-- Parse le JSON de manière sécurisée (sans regex) pour éviter les bugs d'affichage web.
+- Utilise l'API Google Books (optionnel) pour récupérer les résumés depuis le CSV.
+- Utilise Gemini/Ollama pour extraire des tropes matériels et techniques sous forme de JSON.
 """
 
 from __future__ import annotations
