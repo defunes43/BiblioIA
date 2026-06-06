@@ -115,19 +115,18 @@ def get_recommendations(
     for book in catalogue:
         tags: list[str] = book.get("tags", [])
         title = book.get("title", "")
-        title_fr = book.get("title_fr") or title
         author = book.get("author", "")
-
+        
         # Filtre genre (optionnel)
         if genre_filter_norm:
             tag_names_lower = [t.lower() for t in tags]
             if not any(genre_filter_norm in t for t in tag_names_lower):
                 continue
-
+        
         # Filtre anti-doublon (déjà lu)
-        if _is_already_read(title, author, read_set) or _is_already_read(title_fr, author, read_set):
+        if _is_already_read(title, author, read_set):
             continue
-
+        
         # Dot product : score = Σ (weight_tag / max_weight) pour les tags en commun
         matching_tags = []
         raw_score = 0.0
@@ -136,10 +135,10 @@ def get_recommendations(
             if tag_cap in tag_weights:
                 raw_score += tag_weights[tag_cap] / max_weight
                 matching_tags.append(tag_cap)
-
+        
         if raw_score <= 0:
             continue
-
+        
         scored.append((raw_score, book, matching_tags))
 
     # ── Tri et construction du résultat ────────────────────────────────────
@@ -150,12 +149,10 @@ def get_recommendations(
         recommendations.append(
             BookRecommendation(
                 title=book.get("title", ""),
-                title_fr=book.get("title_fr"),
                 author=book.get("author", ""),
                 year_published=book.get("year_published"),
                 score=raw_score,
-                matching_tags=matching_tags[:5],  # Top 5 tags pour l'affichage
-                ebook_link=book.get("ebook_link", ""),
+                matching_tags=matching_tags[:5],
             )
         )
 

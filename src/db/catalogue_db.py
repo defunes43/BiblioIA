@@ -21,17 +21,15 @@ _DDL = """
 CREATE TABLE IF NOT EXISTS books (
     id              TEXT PRIMARY KEY,
     title           TEXT NOT NULL,
-    title_fr        TEXT,
     author          TEXT NOT NULL,
     year_published  INTEGER,
-    is_ebook_fr     INTEGER DEFAULT 0,
-    ebook_link      TEXT,
+    is_ebook        INTEGER DEFAULT 0,
     description     TEXT,
     tags            TEXT,        -- JSON array: ["Space Opera", "IA", ...]
     enriched_at     TEXT,        -- ISO8601, NULL = pas encore enrichi
     source          TEXT         -- 'noosfere'
 );
-CREATE INDEX IF NOT EXISTS idx_ebook     ON books(is_ebook_fr);
+CREATE INDEX IF NOT EXISTS idx_ebook     ON books(is_ebook);
 CREATE INDEX IF NOT EXISTS idx_enriched  ON books(enriched_at);
 """
 
@@ -69,24 +67,38 @@ def init_catalogue(db_path: Path) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def upsert_book(conn: sqlite3.Connection, book: dict) -> None:
-    """Insère ou met à jour un livre (ignore les champs enrichment si déjà enrichi)."""
+    """Insère ou met à jour un livre. En cas de doublon (même titre + auteur), garde l'année la plus récente."""
+    year = book.get("year_published")
+    is_ebook = 1 if (year is not None and year > 2010) else 0
+    
+    # Récupérer l'année existante si le livre existe déjà
+    existing = conn.execute(
+        "SELECT year_published FROM books WHERE title = ? AND author = ?",
+        (book.get("title", ""), book.get("author", "")),
+    ).fetchone()
+    
+    if existing:
+        existing_year = existing[0]
+        if existing_year is not None and (year is None or existing_year > year):
+            year = existing_year
+    
     conn.execute(
         """
-        INSERT INTO books (id, title, title_fr, author, year_published, source)
-        VALUES (:id, :title, :title_fr, :author, :year_published, :source)
+        INSERT INTO books (id, title, author, year_published, is_ebook, source)
+        VALUES (:id, :title, :author, :year_published, :is_ebook, :source)
         ON CONFLICT(id) DO UPDATE SET
             title          = excluded.title,
             author         = excluded.author,
             year_published = excluded.year_published,
+            is_ebook       = excluded.is_ebook,
             source         = excluded.source
-        WHERE books.enriched_at IS NULL
         """,
         {
             "id": book["id"],
             "title": book.get("title", ""),
-            "title_fr": book.get("title_fr"),
             "author": book.get("author", ""),
-            "year_published": book.get("year_published"),
+            "year_published": year,
+            "is_ebook": is_ebook,
             "source": book.get("source", "openlibrary"),
         },
     )
@@ -96,8 +108,6 @@ def mark_enriched(
     conn: sqlite3.Connection,
     book_id: str,
     *,
-    is_ebook_fr: bool,
-    ebook_link: str,
     description: str,
     tags: list[str],
     enriched_at: str,
@@ -106,17 +116,13 @@ def mark_enriched(
     conn.execute(
         """
         UPDATE books
-        SET is_ebook_fr  = :is_ebook_fr,
-            ebook_link   = :ebook_link,
-            description  = :description,
+        SET description  = :description,
             tags         = :tags,
             enriched_at  = :enriched_at
         WHERE id = :id
         """,
         {
             "id": book_id,
-            "is_ebook_fr": 1 if is_ebook_fr else 0,
-            "ebook_link": ebook_link,
             "description": description,
             "tags": json.dumps(tags, ensure_ascii=False),
             "enriched_at": enriched_at,
@@ -141,9 +147,9 @@ def get_all_enriched_ebooks(conn: sqlite3.Connection) -> list[dict]:
     """Retourne tous les livres enrichis et disponibles en ebook FR."""
     rows = conn.execute(
         """
-        SELECT id, title, title_fr, author, year_published, ebook_link, tags
+        SELECT id, title, author, year_published, is_ebook, tags
         FROM books
-        WHERE is_ebook_fr = 1 AND enriched_at IS NOT NULL AND tags IS NOT NULL
+        WHERE is_ebook = 1 AND enriched_at IS NOT NULL AND tags IS NOT NULL
         """
     ).fetchall()
     result = []
@@ -161,5 +167,5 @@ def get_stats(conn: sqlite3.Connection) -> dict:
     """Retourne des statistiques sur le catalogue."""
     total = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
     enriched = conn.execute("SELECT COUNT(*) FROM books WHERE enriched_at IS NOT NULL").fetchone()[0]
-    ebook_fr = conn.execute("SELECT COUNT(*) FROM books WHERE is_ebook_fr = 1").fetchone()[0]
-    return {"total": total, "enriched": enriched, "ebook_fr": ebook_fr}
+    ebook = conn.execute("SELECT COUNT(*) FROM books WHERE is_ebook = 1").fetchone()[0]
+    return {"total": total, "enriched": enriched, "ebook": ebook}

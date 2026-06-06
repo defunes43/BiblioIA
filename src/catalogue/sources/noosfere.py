@@ -232,7 +232,7 @@ def add_to_scraping_queue(conn, numlivre: str, url: str, year: int | None = None
 def get_pending_books(conn, limit: int = 100) -> list[dict]:
     """Retourne les livres en attente de scraping."""
     rows = conn.execute(
-        "SELECT id, numlivre, url FROM scraping_queue WHERE scraped_at IS NULL LIMIT ?",
+        "SELECT id, numlivre, url, year FROM scraping_queue WHERE scraped_at IS NULL LIMIT ?",
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -408,7 +408,7 @@ def process_scraping_queue(
                     "id": f"noosfere-{result.numlivre}",
                     "title": result.title,
                     "author": result.author,
-                    "year_published": None,
+                    "year_published": book.get("year"),
                     "source": "noosfere",
                 }
                 
@@ -417,8 +417,6 @@ def process_scraping_queue(
                     mark_cat_enriched(
                         cat_conn,
                         book_record["id"],
-                        is_ebook_fr=False,
-                        ebook_link="",
                         description=result.summary,
                         tags=tags,
                         enriched_at=datetime.now(timezone.utc).isoformat(),
@@ -484,8 +482,6 @@ def debug_scrape_single_book(
             mark_cat_enriched(
                 cat_conn,
                 book_record["id"],
-                is_ebook_fr=False,
-                ebook_link="",
                 description=result.summary,
                 tags=tags,
                 enriched_at=datetime.now(timezone.utc).isoformat(),

@@ -288,7 +288,8 @@ def cmd_recommend(args: argparse.Namespace) -> None:
     for i, rec in enumerate(recs, start=1):
         score_bar = _score_bar(rec.score)
         tags_str = ", ".join(rec.matching_tags) if rec.matching_tags else "—"
-        ebook_icon = "[green]✓[/]" if rec.ebook_link else "[dim]—[/]"
+        is_ebook = rec.year_published is not None and rec.year_published > 2010
+        ebook_icon = "[green]✓[/]" if is_ebook else "[dim]—[/]"
         year_str = str(rec.year_published) if rec.year_published else "—"
 
         table.add_row(
@@ -302,13 +303,6 @@ def cmd_recommend(args: argparse.Namespace) -> None:
         )
 
     console.print(table)
-
-    # ── Liens ebooks ──────────────────────────────────────────────────────
-    links = [(r.display_title, r.ebook_link) for r in recs if r.ebook_link]
-    if links:
-        console.print("\n[bold]🔗 Liens ebook :[/]")
-        for title, link in links:
-            console.print(f"  [dim]•[/] [cyan]{title}[/] → {link}")
 
     console.print(
         f"\n[dim]{len(recs)} recommandation(s) | "

@@ -15,14 +15,12 @@ class BookRecommendation:
     author: str
     score: float
     matching_tags: list[str] = field(default_factory=list)
-    ebook_link: str = ""
-    title_fr: str | None = None
     year_published: int | None = None
 
     @property
     def display_title(self) -> str:
-        """Retourne le meilleur titre à afficher (FR si disponible)."""
-        return self.title_fr if self.title_fr and self.title_fr != self.title else self.title
+        """Retourne le titre à afficher."""
+        return self.title
 
     @property
     def score_pct(self) -> int:
